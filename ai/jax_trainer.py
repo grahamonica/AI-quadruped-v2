@@ -896,9 +896,9 @@ class JaxESTrainer:
         return self._top_generations.copy()
 
     def _random_goal(self) -> jax.Array:
-        self._key, angle_key, radius_key = jax.random.split(self._key, 3)
+        self._key, angle_key = jax.random.split(self._key, 2)
         angle = jax.random.uniform(angle_key, (), minval=0.0, maxval=2.0 * jnp.pi)
-        radius = jax.random.uniform(radius_key, (), minval=0.5, maxval=FIELD_HALF * 0.8)
+        radius = 10.0
         return jnp.array(
             [radius * jnp.cos(angle), radius * jnp.sin(angle), GOAL_HEIGHT_M],
             dtype=jnp.float32,
