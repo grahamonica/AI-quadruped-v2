@@ -863,6 +863,7 @@ class JaxESTrainer:
         self._top_params = np.zeros((0, PARAM_COUNT), dtype=np.float32)
         self._top_rewards = np.zeros((0,), dtype=np.float32)
         self._top_indices = np.zeros((0,), dtype=np.int32)
+        self._top_generations = np.zeros((0,), dtype=np.int32)
 
     @property
     def backend(self) -> str:
@@ -887,6 +888,10 @@ class JaxESTrainer:
     @property
     def top_indices(self) -> np.ndarray:
         return self._top_indices.copy()
+
+    @property
+    def top_generations(self) -> np.ndarray:
+        return self._top_generations.copy()
 
     def _random_goal(self) -> jax.Array:
         self._key, angle_key, radius_key = jax.random.split(self._key, 3)
@@ -925,18 +930,35 @@ class JaxESTrainer:
         top_indices = top_indices[np.argsort(returns_np[top_indices])[::-1]]
         top_params = np.asarray(jnp.take(params_batch, jnp.asarray(top_indices), axis=0), dtype=np.float32)
         top_rewards = returns_np[top_indices].astype(np.float32)
-        self._top_params = top_params
-        self._top_rewards = top_rewards
-        self._top_indices = top_indices.astype(np.int32)
-        self._params = jnp.asarray(top_params.mean(axis=0), dtype=jnp.float32)
+        top_generations = np.full((elite_count,), self.state.generation + 1, dtype=np.int32)
+
+        if self._top_rewards.size > 0:
+            combined_params = np.concatenate([self._top_params, top_params], axis=0)
+            combined_rewards = np.concatenate([self._top_rewards, top_rewards], axis=0)
+            combined_indices = np.concatenate([self._top_indices, top_indices.astype(np.int32)], axis=0)
+            combined_generations = np.concatenate([self._top_generations, top_generations], axis=0)
+        else:
+            combined_params = top_params
+            combined_rewards = top_rewards
+            combined_indices = top_indices.astype(np.int32)
+            combined_generations = top_generations
+
+        leaderboard_count = min(PARENT_ELITE_COUNT, combined_rewards.shape[0])
+        leaderboard_indices = np.argpartition(combined_rewards, -leaderboard_count)[-leaderboard_count:]
+        leaderboard_indices = leaderboard_indices[np.argsort(combined_rewards[leaderboard_indices])[::-1]]
+        self._top_params = combined_params[leaderboard_indices].astype(np.float32)
+        self._top_rewards = combined_rewards[leaderboard_indices].astype(np.float32)
+        self._top_indices = combined_indices[leaderboard_indices].astype(np.int32)
+        self._top_generations = combined_generations[leaderboard_indices].astype(np.int32)
+        self._params = jnp.asarray(self._top_params.mean(axis=0), dtype=jnp.float32)
 
         self.state.generation += 1
         self.state.mean_reward = float(returns_np.mean())
-        self.state.episode_reward = float(top_rewards.mean()) if top_rewards.size else 0.0
+        self.state.episode_reward = float(self._top_rewards.mean()) if self._top_rewards.size else 0.0
         self.state.best_reward = max(self.state.best_reward, self.state.episode_reward)
         self.state.best_single_reward = max(
             self.state.best_single_reward,
-            float(top_rewards[0]) if top_rewards.size else -1e9,
+            float(self._top_rewards[0]) if self._top_rewards.size else -1e9,
         )
         self.state.rewards_history.append(self.state.mean_reward)
 
@@ -958,6 +980,7 @@ class JaxESTrainer:
             "top_params": self._top_params.astype(np.float32),
             "top_rewards": self._top_rewards.astype(np.float32),
             "top_indices": self._top_indices.astype(np.int32),
+            "top_generations": self._top_generations.astype(np.int32),
             "generation": np.int32(self.state.generation),
             "best_reward": np.float32(self.state.best_reward),
             "best_single_reward": np.float32(self.state.best_single_reward),
@@ -984,6 +1007,14 @@ class JaxESTrainer:
             self._top_rewards = checkpoint["top_rewards"].astype(np.float32) if "top_rewards" in checkpoint.files else np.zeros((0,), dtype=np.float32)
             self._top_indices = checkpoint["top_indices"].astype(np.int32) if "top_indices" in checkpoint.files else np.zeros((0,), dtype=np.int32)
             self.state.generation = int(checkpoint["generation"])
+            if "top_generations" in checkpoint.files:
+                self._top_generations = checkpoint["top_generations"].astype(np.int32)
+            else:
+                self._top_generations = np.full(
+                    (self._top_rewards.shape[0],),
+                    self.state.generation,
+                    dtype=np.int32,
+                )
             self.state.best_reward = float(checkpoint["best_reward"])
             self.state.best_single_reward = (
                 float(checkpoint["best_single_reward"])

@@ -112,10 +112,12 @@ def main() -> int:
         top_params = trainer.top_params
         top_rewards = trainer.top_rewards
         top_indices = trainer.top_indices
+        top_generations = trainer.top_generations
         payload["params"] = top_params[rank_index].astype(np.float32)
         payload["candidate_reward"] = np.float32(top_rewards[rank_index])
         payload["candidate_rank"] = np.int32(rank_index + 1)
         payload["candidate_source_index"] = np.int32(top_indices[rank_index])
+        payload["candidate_source_generation"] = np.int32(top_generations[rank_index])
         return payload
 
     def _save_top_ranked() -> None:
