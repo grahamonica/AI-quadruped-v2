@@ -774,8 +774,31 @@ def _run_episode_flat(params_flat: jax.Array, goal_xyz: jax.Array, key: jax.Arra
 
 
 @partial(jax.jit, static_argnames=("steps",))
-def _run_episode_batch_flat(params_batch: jax.Array, goal_xyz: jax.Array, keys: jax.Array, steps: int) -> jax.Array:
+def _run_episode_batch_single_device(params_batch: jax.Array, goal_xyz: jax.Array, keys: jax.Array, steps: int) -> jax.Array:
     return jax.vmap(lambda p, k: _run_episode_flat(p, goal_xyz, k, steps))(params_batch, keys)
+
+
+_pmap_runners: dict[int, Any] = {}
+
+
+def _get_pmap_runner(steps: int) -> Any:
+    if steps not in _pmap_runners:
+        @partial(jax.pmap, in_axes=(0, None, 0))
+        def _run_shards(params_shard: jax.Array, goal_xyz: jax.Array, keys_shard: jax.Array) -> jax.Array:
+            return jax.vmap(lambda p, k: _run_episode_flat(p, goal_xyz, k, steps))(params_shard, keys_shard)
+        _pmap_runners[steps] = _run_shards
+    return _pmap_runners[steps]
+
+
+def _run_episode_batch_flat(params_batch: jax.Array, goal_xyz: jax.Array, keys: jax.Array, steps: int) -> jax.Array:
+    n_devices = jax.device_count()
+    if n_devices > 1 and params_batch.shape[0] % n_devices == 0:
+        shard_size = params_batch.shape[0] // n_devices
+        params_sharded = params_batch.reshape(n_devices, shard_size, PARAM_COUNT)
+        keys_sharded = keys.reshape(n_devices, shard_size, *keys.shape[1:])
+        returns_sharded = _get_pmap_runner(steps)(params_sharded, goal_xyz, keys_sharded)
+        return returns_sharded.reshape(params_batch.shape[0])
+    return _run_episode_batch_single_device(params_batch, goal_xyz, keys, steps)
 
 
 @jax.jit

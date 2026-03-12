@@ -78,11 +78,14 @@ def main() -> int:
     if args.population_size is None and getattr(trainer, "backend", "unknown") == "gpu" and trainer_module.POP_SIZE < GPU_DEFAULT_POP_SIZE:
         trainer_module.POP_SIZE = GPU_DEFAULT_POP_SIZE
 
+    latest_path = args.out_dir / "latest.npz"
+
     if args.resume is not None:
         trainer.load_checkpoint(args.resume)
         _log(f"Resumed from {args.resume}")
-
-    latest_path = args.out_dir / "latest.npz"
+    elif (args.out_dir / "best.npz").exists():
+        trainer.load_checkpoint(args.out_dir / "best.npz")
+        _log(f"Auto-resumed from {args.out_dir / 'best.npz'}")
     best_path = args.out_dir / "best.npz"
     top_paths = [args.out_dir / f"top_{rank:02d}.npz" for rank in range(1, trainer_module.PARENT_ELITE_COUNT + 1)]
     best_single_path = args.out_dir / "best_single.npz"
