@@ -53,13 +53,10 @@ SLOW_PROGRESS_TAU_S = 0.80
 DRAMATIC_PROGRESS_DROP_RATIO = 0.55
 NOISE_ATTACK_TAU_S = 0.15
 NOISE_RELEASE_TAU_S = 0.90
-LONG_THIN_SIDE_ROLL_MIN_RAD = math.radians(65.0)
-LONG_THIN_SIDE_ROLL_MAX_RAD = math.radians(115.0)
-LONG_THIN_SIDE_STUCK_DELAY_S = 1.0
-LONG_THIN_SIDE_PENALTY_PER_S = 3.0
-STUCK_IMU_ROLL_CHANGE_REWARD_PER_RAD = 3.5
-SELF_RIGHT_EXIT_BONUS = 4.0
-STUCK_ENTRY_PENALTY = 4.0
+SIDE_TIP_BAND_HALF_WIDTH_RAD = math.radians(60.0)
+SIDE_TIP_DEPTH_PENALTY_SCALE = 20.0
+SIDE_TIP_ESCAPE_DELTA_SCALE = 20.0
+SIDE_TIP_EXIT_BONUS = 8.0
 PROGRESS_REWARD_SCALE = 25.0
 GOAL_REACHED_RADIUS_M = 0.25
 GOAL_REACHED_BONUS = 25.0
@@ -158,10 +155,8 @@ class EpisodeCarry(NamedTuple):
     slow_closing_rate: jax.Array
     closing_rate: jax.Array
     progress_drop_ratio: jax.Array
-    long_thin_side_dwell_s: jax.Array
-    long_thin_side_stuck: jax.Array
+    prev_side_tip_depth_norm: jax.Array
     goal_reached: jax.Array
-    prev_imu_roll_rad: jax.Array
 
 
 @dataclass
@@ -251,6 +246,13 @@ def _contact_mode_name(mode: int) -> str:
     if mode == 2:
         return "kinetic"
     return "airborne"
+
+
+def _side_tip_depth_norm(imu_roll_rad: jax.Array) -> jax.Array:
+    abs_roll_rad = jnp.abs(_wrap_angle_pi(imu_roll_rad))
+    side_center_error_rad = jnp.abs(abs_roll_rad - jnp.float32(math.pi / 2.0))
+    side_band_depth_rad = jnp.maximum(jnp.float32(SIDE_TIP_BAND_HALF_WIDTH_RAD) - side_center_error_rad, 0.0)
+    return side_band_depth_rad / jnp.float32(SIDE_TIP_BAND_HALF_WIDTH_RAD)
 
 
 def _brain_zero_state() -> BrainState:
@@ -674,6 +676,7 @@ def _episode_init(goal_xyz: jax.Array, key: jax.Array) -> EpisodeCarry:
     env_state = _env_reset()
     com = _center_of_mass(env_state)
     initial_dist = jnp.linalg.norm(com[:2] - goal_xyz[:2])
+    initial_roll_rad = _wrap_angle_pi(env_state.body_rot[0])
     return EpisodeCarry(
         env_state=env_state,
         brain_state=_brain_zero_state(),
@@ -686,10 +689,8 @@ def _episode_init(goal_xyz: jax.Array, key: jax.Array) -> EpisodeCarry:
         slow_closing_rate=jnp.float32(0.0),
         closing_rate=jnp.float32(0.0),
         progress_drop_ratio=jnp.float32(0.0),
-        long_thin_side_dwell_s=jnp.float32(0.0),
-        long_thin_side_stuck=jnp.array(False),
+        prev_side_tip_depth_norm=_side_tip_depth_norm(initial_roll_rad),
         goal_reached=jnp.array(False),
-        prev_imu_roll_rad=_wrap_angle_pi(env_state.body_rot[0]),
     )
 
 
@@ -731,19 +732,12 @@ def _episode_step(params: dict[str, jax.Array], carry: EpisodeCarry, goal_xyz: j
     reward = reward + jnp.where(reached_goal_now, GOAL_REACHED_BONUS, 0.0)
 
     imu_roll_rad = _wrap_angle_pi(env_state.body_rot[0])
-    abs_roll_rad = jnp.abs(imu_roll_rad)
-    on_long_thin_side = (abs_roll_rad >= LONG_THIN_SIDE_ROLL_MIN_RAD) & (abs_roll_rad <= LONG_THIN_SIDE_ROLL_MAX_RAD)
-    long_thin_side_dwell_s = jnp.where(on_long_thin_side, carry.long_thin_side_dwell_s + BRAIN_DT, 0.0)
-    long_thin_side_stuck = carry.long_thin_side_stuck | (long_thin_side_dwell_s >= LONG_THIN_SIDE_STUCK_DELAY_S)
-    entered_stuck_side = (~carry.long_thin_side_stuck) & long_thin_side_stuck
-    reward = reward - jnp.where(entered_stuck_side, STUCK_ENTRY_PENALTY, 0.0)
-    reward = reward - jnp.where(long_thin_side_stuck, LONG_THIN_SIDE_PENALTY_PER_S * BRAIN_DT, 0.0)
-    imu_roll_delta_rad = jnp.abs(_wrap_angle_pi(imu_roll_rad - carry.prev_imu_roll_rad))
-    reward = reward + jnp.where(long_thin_side_stuck, imu_roll_delta_rad * STUCK_IMU_ROLL_CHANGE_REWARD_PER_RAD, 0.0)
-    exited_side = long_thin_side_stuck & (~on_long_thin_side)
-    reward = reward + jnp.where(exited_side, SELF_RIGHT_EXIT_BONUS, 0.0)
-    long_thin_side_stuck = jnp.where(exited_side, False, long_thin_side_stuck)
-    long_thin_side_dwell_s = jnp.where(exited_side, 0.0, long_thin_side_dwell_s)
+    side_tip_depth_norm = _side_tip_depth_norm(imu_roll_rad)
+    side_tip_depth_delta = carry.prev_side_tip_depth_norm - side_tip_depth_norm
+    reward = reward - ((side_tip_depth_norm * side_tip_depth_norm) * SIDE_TIP_DEPTH_PENALTY_SCALE)
+    reward = reward + (side_tip_depth_delta * SIDE_TIP_ESCAPE_DELTA_SCALE)
+    exited_side_band = (carry.prev_side_tip_depth_norm > 0.0) & (side_tip_depth_norm <= 0.0)
+    reward = reward + jnp.where(exited_side_band, SIDE_TIP_EXIT_BONUS, 0.0)
 
     return EpisodeCarry(
         env_state=env_state,
@@ -757,10 +751,8 @@ def _episode_step(params: dict[str, jax.Array], carry: EpisodeCarry, goal_xyz: j
         slow_closing_rate=slow_closing_rate,
         closing_rate=closing_rate,
         progress_drop_ratio=progress_drop_ratio,
-        long_thin_side_dwell_s=long_thin_side_dwell_s,
-        long_thin_side_stuck=long_thin_side_stuck,
+        prev_side_tip_depth_norm=side_tip_depth_norm,
         goal_reached=carry.goal_reached | reached_goal_now,
-        prev_imu_roll_rad=imu_roll_rad,
     )
 
 
