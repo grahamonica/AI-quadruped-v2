@@ -59,6 +59,11 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    start_time_s = time.perf_counter()
+
+    def _log(message: str) -> None:
+        elapsed_s = time.perf_counter() - start_time_s
+        print(f"[elapsed={elapsed_s:9.2f}s] {message}", flush=True)
 
     if args.episode_seconds is not None:
         trainer_module.EPISODE_S = args.episode_seconds
@@ -69,11 +74,20 @@ def main() -> int:
 
     if args.resume is not None:
         trainer.load_checkpoint(args.resume)
-        print(f"Resumed from {args.resume}")
+        _log(f"Resumed from {args.resume}")
 
     latest_path = args.out_dir / "latest.npz"
     best_path = args.out_dir / "best.npz"
     interrupted = False
+
+    def _save_checkpoint(path: Path, label: str) -> Path:
+        saved_path = trainer.save_checkpoint(path)
+        _log(
+            f"checkpoint updated: {label:<10} "
+            f"gen={trainer.state.generation:6d}  "
+            f"path={saved_path}"
+        )
+        return saved_path
 
     def _handle_interrupt(_sig, _frame) -> None:
         nonlocal interrupted
@@ -82,16 +96,15 @@ def main() -> int:
     signal.signal(signal.SIGINT, _handle_interrupt)
     signal.signal(signal.SIGTERM, _handle_interrupt)
 
-    print("Headless training started")
+    _log("Headless training started")
     backend_description = f"JAX ES trainer ({getattr(trainer, 'backend', 'unknown')})"
-    print(f"Backend: {backend_description}. No frontend or rendering is started.")
+    _log(f"Backend: {backend_description}. No frontend or rendering is started.")
     if hasattr(trainer, "device_summary"):
-        print(f"Devices: {trainer.device_summary}")
-    print(
+        _log(f"Devices: {trainer.device_summary}")
+    _log(
         f"Config: episode_s={trainer_module.EPISODE_S}  pop_size={trainer_module.POP_SIZE}  "
         f"save_every={args.save_every}"
     )
-    start_time_s = time.perf_counter()
     previous_best = trainer.state.best_reward
 
     for _ in range(args.generations):
@@ -107,27 +120,26 @@ def main() -> int:
             step = int(msg.get("step", 0))
             total_steps = int(msg.get("total_steps", 0))
             if step == 0 or step % args.progress_every_steps == 0 or step >= max(total_steps - 1, 0):
-                print(
+                _log(
                     f"gen={target_generation:6d}  "
                     f"step={step:6d}/{total_steps:6d}  "
                     f"reward={float(msg.get('reward', 0.0)):10.3f}  "
-                    f"sim={float(msg.get('time_s', 0.0)):8.2f}s",
-                    flush=True,
+                    f"sim={float(msg.get('time_s', 0.0)):8.2f}s"
                 )
 
         trainer.run_generation(on_step=_on_step if args.progress_every_steps > 0 else None)
         elapsed_s = time.perf_counter() - generation_start_s
 
-        trainer.save_checkpoint(latest_path)
+        _save_checkpoint(latest_path, "latest")
         should_save_generation = args.save_every > 0 and trainer.state.generation % args.save_every == 0
         if should_save_generation:
-            trainer.save_checkpoint(args.out_dir / f"generation_{trainer.state.generation:06d}.npz")
+            _save_checkpoint(args.out_dir / f"generation_{trainer.state.generation:06d}.npz", "generation")
 
         if trainer.state.best_reward > previous_best:
-            trainer.save_checkpoint(best_path)
+            _save_checkpoint(best_path, "best")
             previous_best = trainer.state.best_reward
 
-        print(
+        _log(
             f"gen={trainer.state.generation:6d}  "
             f"mean_reward={trainer.state.mean_reward:10.3f}  "
             f"best_reward={trainer.state.best_reward:10.3f}  "
@@ -135,11 +147,11 @@ def main() -> int:
         )
 
     total_elapsed_s = time.perf_counter() - start_time_s
-    trainer.save_checkpoint(latest_path)
+    _save_checkpoint(latest_path, "latest")
     status = "interrupted" if interrupted else "completed"
-    print(f"Training {status} after {trainer.state.generation} generations in {total_elapsed_s:.2f}s")
-    print(f"Latest checkpoint: {latest_path}")
-    print(f"Best checkpoint:   {best_path}")
+    _log(f"Training {status} after {trainer.state.generation} generations in {total_elapsed_s:.2f}s")
+    _log(f"Latest checkpoint: {latest_path}")
+    _log(f"Best checkpoint:   {best_path}")
     if interrupted:
         return 130
     return 0
