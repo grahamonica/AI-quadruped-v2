@@ -878,16 +878,7 @@ class JaxESTrainer:
         steps = int(EPISODE_S / BRAIN_DT)
         for step_i in range(steps):
             carry = _episode_step_logged(params_flat, carry, goal_xyz)
-            on_step(
-                {
-                    "type": "step",
-                    "step": step_i,
-                    "total_steps": steps,
-                    "reward": float(carry.total_reward),
-                    "goal": np.asarray(goal_xyz).tolist(),
-                    "time_s": float(carry.env_state.time_s),
-                }
-            )
+            on_step(_step_snapshot(carry, goal_xyz, step_i, steps))
         return float(carry.total_reward)
 
     def run_generation(self, on_step: Any = None, on_gen_done: Any = None) -> None:
@@ -922,6 +913,7 @@ class JaxESTrainer:
         self.state.generation += 1
         self.state.mean_reward = float(returns_np.mean())
         self.state.best_reward = max(self.state.best_reward, float(returns_np.max()))
+        self.state.episode_reward = float(returns_np[0]) if returns_np.size else 0.0
         self.state.rewards_history.append(self.state.mean_reward)
 
         if on_gen_done is not None:
@@ -967,3 +959,14 @@ class JaxESTrainer:
             self.state.goal_xyz = tuple(float(v) for v in checkpoint["goal_xyz"].tolist())
             self.state.rewards_history = [float(v) for v in checkpoint["rewards_history"].tolist()]
             self._key = jnp.asarray(checkpoint["rng_key"], dtype=jnp.uint32)
+
+
+ESTrainer = JaxESTrainer
+
+__all__ = [
+    "EPISODE_S",
+    "POP_SIZE",
+    "TrainingState",
+    "JaxESTrainer",
+    "ESTrainer",
+]

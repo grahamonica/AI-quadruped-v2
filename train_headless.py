@@ -6,16 +6,12 @@ saves periodic checkpoints to disk.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import signal
 import time
 from pathlib import Path
 
-import ai.trainer as trainer_module
-
-
-def _jax_available() -> bool:
-    return importlib.util.find_spec("jax") is not None
+import ai.jax_trainer as trainer_module
+from ai.trainer import ESTrainer
 
 
 def _parse_args() -> argparse.Namespace:
@@ -58,37 +54,18 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         help="If > 0, print headless progress every N streamed episode steps.",
     )
-    parser.add_argument(
-        "--backend",
-        choices=("auto", "jax", "numpy"),
-        default="auto",
-        help="Training backend. 'auto' prefers JAX if installed in the active interpreter.",
-    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
 
-    selected_backend = args.backend
-    if selected_backend == "auto":
-        selected_backend = "jax" if _jax_available() else "numpy"
-
-    if selected_backend == "jax":
-        if not _jax_available():
-            raise SystemExit("JAX backend requested, but 'jax' is not installed in this interpreter.")
-        from ai.jax_trainer import JaxESTrainer as TrainerClass
-        import ai.jax_trainer as backend_module
-    else:
-        from ai.trainer import ESTrainer as TrainerClass
-        backend_module = trainer_module
-
     if args.episode_seconds is not None:
-        backend_module.EPISODE_S = args.episode_seconds
+        trainer_module.EPISODE_S = args.episode_seconds
     if args.population_size is not None:
-        backend_module.POP_SIZE = args.population_size
+        trainer_module.POP_SIZE = args.population_size
 
-    trainer = TrainerClass(seed=args.seed)
+    trainer = ESTrainer(seed=args.seed)
 
     if args.resume is not None:
         trainer.load_checkpoint(args.resume)
@@ -106,16 +83,12 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _handle_interrupt)
 
     print("Headless training started")
-    backend_description = (
-        f"JAX ES trainer ({getattr(trainer, 'backend', 'unknown')})"
-        if selected_backend == "jax"
-        else "NumPy ES trainer (CPU)"
-    )
+    backend_description = f"JAX ES trainer ({getattr(trainer, 'backend', 'unknown')})"
     print(f"Backend: {backend_description}. No frontend or rendering is started.")
-    if selected_backend == "jax" and hasattr(trainer, "device_summary"):
+    if hasattr(trainer, "device_summary"):
         print(f"Devices: {trainer.device_summary}")
     print(
-        f"Config: episode_s={backend_module.EPISODE_S}  pop_size={backend_module.POP_SIZE}  "
+        f"Config: episode_s={trainer_module.EPISODE_S}  pop_size={trainer_module.POP_SIZE}  "
         f"save_every={args.save_every}"
     )
     start_time_s = time.perf_counter()

@@ -14,7 +14,7 @@ Minimal Python quadruped simulation inspired by the KT2 Kungfu Turtle layout.
 ## Run UI
 
 ```bash
-python3 main.py
+./venv/bin/python main.py
 ```
 
 This starts the training server and the React frontend.
@@ -22,7 +22,7 @@ This starts the training server and the React frontend.
 ## Train Headless
 
 ```bash
-./venv/bin/python train_headless.py --backend jax --generations 100 --save-every 5 --episode-seconds 60
+./venv/bin/python train_headless.py --generations 100 --save-every 5 --episode-seconds 60
 ```
 
 This runs the ES trainer without the websocket server or frontend and writes checkpoints to `checkpoints/latest.npz`, `checkpoints/best.npz`, and periodic `checkpoints/generation_*.npz` files.

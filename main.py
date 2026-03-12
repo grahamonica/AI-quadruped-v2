@@ -1,7 +1,7 @@
 """Entry point: starts the training server and the React frontend together.
 
-Usage (any python):
-    python main.py
+Usage:
+    ./venv/bin/python main.py
 
 Ctrl-C shuts down both processes cleanly.
 On the NEXT launch, any leftover processes from the previous run are killed
@@ -12,6 +12,7 @@ from __future__ import annotations
 import atexit
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -20,11 +21,19 @@ from pathlib import Path
 PROJECT = Path(__file__).parent.resolve()
 FRONTEND = PROJECT / "frontend"
 PID_FILE = PROJECT / ".server_pids"
+VENV_PY = PROJECT / "venv" / "bin" / "python"
 
-# Use python3.13 (which has uvicorn/fastapi/numpy installed system-wide).
-_PY = "python3.13" if subprocess.run(
-    ["python3.13", "--version"], capture_output=True
-).returncode == 0 else sys.executable
+
+def _resolve_python() -> str:
+    if VENV_PY.exists():
+        return str(VENV_PY)
+    python313 = shutil.which("python3.13")
+    if python313:
+        return python313
+    return sys.executable
+
+
+_PY = _resolve_python()
 
 
 # ── PID-file helpers ───────────────────────────────────────────────────────────

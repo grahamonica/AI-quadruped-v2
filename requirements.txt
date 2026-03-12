@@ -1,0 +1,12 @@
+# Core Python dependencies for the simulator, trainer, and FastAPI server.
+# tkinter is part of the Python standard library, but it still requires system
+# Tk support to be installed on the host Python.
+#
+# For Nvidia training machines, install the CUDA-enabled JAX build that matches
+# your driver/CUDA setup after installing this file's baseline dependencies.
+
+fastapi==0.135.1
+uvicorn==0.41.0
+websockets==16.0
+numpy==2.4.3
+jax==0.9.1
