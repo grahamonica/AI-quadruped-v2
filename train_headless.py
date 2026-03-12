@@ -20,7 +20,7 @@ GPU_DEFAULT_POP_SIZE = 16
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run headless quadruped training and save checkpoints.")
-    parser.add_argument("--generations", type=int, default=10000, help="Number of generations to train.")
+    parser.add_argument("--generations", type=int, default=100, help="Number of generations to train.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for trainer initialization.")
     parser.add_argument(
         "--out-dir",
