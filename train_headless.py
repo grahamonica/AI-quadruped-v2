@@ -15,7 +15,7 @@ import numpy as np
 import ai.jax_trainer as trainer_module
 from ai.trainer import ESTrainer
 
-GPU_DEFAULT_POP_SIZE = 32
+GPU_DEFAULT_POP_SIZE = 256
 
 
 def _parse_args() -> argparse.Namespace:
