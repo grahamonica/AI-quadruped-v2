@@ -19,8 +19,11 @@ class Quadruped:
         body_width_m: float = 0.12,
         body_height_m: float = 0.02,
         body_mass_kg: float = 2.4,
+        body_elastic_deformation_m: float = 0.002,
         leg_length_m: float = 0.16,
         leg_mass_kg: float = 0.6,
+        leg_radius_m: float = 0.010,
+        foot_radius_m: float = 0.010,
         foot_static_friction: float = 0.9,
         foot_kinetic_friction: float = 0.65,
     ) -> "Quadruped":
@@ -29,16 +32,17 @@ class Quadruped:
             width_m=body_width_m,
             height_m=body_height_m,
             mass_kg=body_mass_kg,
+            elastic_deformation_m=body_elastic_deformation_m,
         )
 
         half_length, half_width, _ = body.half_extents()
         mount_z = 0.0
 
         legs = [
-            Leg("front_left", leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, (half_length, half_width, mount_z)),
-            Leg("front_right", leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, (half_length, -half_width, mount_z)),
-            Leg("rear_left", leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, (-half_length, half_width, mount_z)),
-            Leg("rear_right", leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, (-half_length, -half_width, mount_z)),
+            Leg("front_left",  leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, ( half_length,  half_width, mount_z), leg_radius_m=leg_radius_m, foot_radius_m=foot_radius_m),
+            Leg("front_right", leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, ( half_length, -half_width, mount_z), leg_radius_m=leg_radius_m, foot_radius_m=foot_radius_m),
+            Leg("rear_left",   leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, (-half_length,  half_width, mount_z), leg_radius_m=leg_radius_m, foot_radius_m=foot_radius_m),
+            Leg("rear_right",  leg_length_m, leg_mass_kg, foot_static_friction, foot_kinetic_friction, (-half_length, -half_width, mount_z), leg_radius_m=leg_radius_m, foot_radius_m=foot_radius_m),
         ]
         return cls(body=body, legs=legs)
 

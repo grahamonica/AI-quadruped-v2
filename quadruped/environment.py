@@ -38,6 +38,9 @@ def _sign(value: float) -> float:
     return 0.0
 
 
+_LEG_BODY_FRACTIONS: tuple[float, ...] = (0.25, 0.50, 0.75)
+
+
 def _rotation_matrix_xyz(roll_rad: float, pitch_rad: float, yaw_rad: float) -> tuple[tuple[float, float, float], ...]:
     cr = cos(roll_rad)
     sr = sin(roll_rad)
@@ -125,14 +128,20 @@ class QuadrupedEnvironment:
         )
         self._contact_memory = {leg.name: ContactMemory() for leg in self.robot.legs}
         self._body_contact_memory = {
-            index: ContactMemory() for index, _ in enumerate(self.robot.body.corners_body_frame())
+            index: ContactMemory() for index, _ in enumerate(self.robot.body.contact_sample_points_body_frame())
+        }
+        self._leg_body_contact_memory: dict[tuple[str, int], ContactMemory] = {
+            (leg.name, i): ContactMemory()
+            for leg in self.robot.legs
+            for i in range(len(_LEG_BODY_FRACTIONS))
         }
         self.reset_pose()
 
     def reset_pose(self) -> None:
         body = self.robot.body
+        # Lowest contact point is the bottom of each spherical foot tip.
         lowest_foot_body_z = min(
-            leg.mount_point_xyz_m[2] + leg.foot_offset_from_mount_m()[2]
+            leg.mount_point_xyz_m[2] + leg.foot_offset_from_mount_m()[2] - leg.foot_radius_m
             for leg in self.robot.legs
         )
         body.position_xyz_m[:] = [0.0, 0.0, self.floor_height_m - lowest_foot_body_z]
@@ -157,12 +166,17 @@ class QuadrupedEnvironment:
             )
             self.leg_force_states[leg.name] = LegForceState(leg_name=leg.name)
 
-        for index, corner in enumerate(body.corners_body_frame()):
-            point = self._body_point_world(corner)
+        floor_threshold = self.floor_height_m + body.elastic_deformation_m + 1e-5
+        for index, sample_point in enumerate(body.contact_sample_points_body_frame()):
+            point = self._body_point_world(sample_point)
             self._body_contact_memory[index] = ContactMemory(
-                is_in_contact=point[2] <= self.floor_height_m + 1e-5,
+                is_in_contact=point[2] <= floor_threshold,
                 tangential_anchor_xy_m=(point[0], point[1]),
             )
+
+        for leg in self.robot.legs:
+            for i in range(len(_LEG_BODY_FRACTIONS)):
+                self._leg_body_contact_memory[(leg.name, i)] = ContactMemory()
 
         self.time_s = 0.0
         leg_kinematics = self._compute_leg_kinematics()
@@ -188,6 +202,7 @@ class QuadrupedEnvironment:
         leg_kinematics = self._compute_leg_kinematics()
         leg_contacts = self._compute_leg_contacts_from_kinematics(leg_kinematics)
         body_contacts = self._compute_body_contacts()
+        leg_body_contacts = self._compute_leg_body_contacts()
 
         body = self.robot.body
         total_force_n = (0.0, 0.0, -self.robot.total_mass_kg * self.gravity_m_s2)
@@ -211,7 +226,8 @@ class QuadrupedEnvironment:
             total_force_n = _v_add(total_force_n, inertia_force)
 
             # Rotational inertia reaction: τ = -I_leg * α_leg (about swing axis)
-            # Moment of inertia of uniform rod about one end: I = m*L²/3
+            # Moment of inertia of cylinder about one end: I = m*L²/3
+            # (spherical foot tip contribution ~m*(2r²/5 + L²) negligible since foot_radius_m << length_m)
             inertia_about_mount_kg_m2 = leg.mass_kg * leg.length_m**2 / 3.0
             rot_reaction = _v_scale(leg_rot_axis_world, -inertia_about_mount_kg_m2 * leg.angular_acceleration_rad_s2)
             total_torque_n_m = _v_add(total_torque_n_m, rot_reaction)
@@ -228,6 +244,10 @@ class QuadrupedEnvironment:
             total_force_n = _v_add(total_force_n, contact["force"])
             total_torque_n_m = _v_add(total_torque_n_m, _v_cross(contact["r_world"], contact["force"]))
 
+        for contact in leg_body_contacts:
+            total_force_n = _v_add(total_force_n, contact["force"])
+            total_torque_n_m = _v_add(total_torque_n_m, _v_cross(contact["r_world"], contact["force"]))
+
         total_mass = self.robot.total_mass_kg
         prev_velocity = tuple(body.velocity_xyz_m_s)
         prev_angular_velocity = tuple(body.angular_velocity_xyz_rad_s)
@@ -238,6 +258,7 @@ class QuadrupedEnvironment:
         any_grounded = (
             any(contact["force"][2] > 0.0 for contact in leg_contacts.values())
             or any(contact["force"][2] > 0.0 for contact in body_contacts)
+            or any(contact["force"][2] > 0.0 for contact in leg_body_contacts)
         )
         active_linear_damping = self.linear_damping_n_s_m if any_grounded else self.airborne_linear_damping_n_s_m
         active_angular_damping = self.angular_damping_n_m_s if any_grounded else self.airborne_angular_damping_n_m_s
@@ -324,21 +345,26 @@ class QuadrupedEnvironment:
                 static_mu=leg.foot_static_friction,
                 kinetic_mu=leg.foot_kinetic_friction,
                 memory=self._contact_memory[leg.name],
+                floor_extra_m=leg.foot_radius_m + self.robot.body.elastic_deformation_m,
             )
+            # Contact force acts at the bottom of the spherical foot tip.
+            contact_point = (foot_position[0], foot_position[1], foot_position[2] - leg.foot_radius_m)
+            r_world = _v_sub(contact_point, tuple(self.robot.body.position_xyz_m))
             contacts[leg.name] = {
                 "position": foot_position,
                 "velocity": foot_velocity,
                 "force": force,
-                "r_world": info["r_world"],
+                "r_world": r_world,
                 "mode": mode,
             }
         return contacts
 
     def _compute_body_contacts(self) -> list[dict[str, tuple[float, float, float] | str]]:
         contacts: list[dict[str, tuple[float, float, float] | str]] = []
-        for index, corner_body in enumerate(self.robot.body.corners_body_frame()):
-            point_position = self._body_point_world(corner_body)
-            point_velocity = self._point_velocity_world(corner_body)
+        body = self.robot.body
+        for index, sample_point in enumerate(body.contact_sample_points_body_frame()):
+            point_position = self._body_point_world(sample_point)
+            point_velocity = self._point_velocity_world(sample_point)
             force, mode = self._compute_contact_force(
                 point_key=f"body_{index}",
                 position=point_position,
@@ -346,6 +372,7 @@ class QuadrupedEnvironment:
                 static_mu=self.body_contact_friction,
                 kinetic_mu=self.body_contact_friction,
                 memory=self._body_contact_memory[index],
+                floor_extra_m=body.elastic_deformation_m,
             )
             if force != (0.0, 0.0, 0.0):
                 contacts.append(
@@ -353,10 +380,49 @@ class QuadrupedEnvironment:
                         "position": point_position,
                         "velocity": point_velocity,
                         "force": force,
-                        "r_world": _v_sub(point_position, tuple(self.robot.body.position_xyz_m)),
+                        "r_world": _v_sub(point_position, tuple(body.position_xyz_m)),
                         "mode": mode,
                     }
                 )
+        return contacts
+
+    def _compute_leg_body_contacts(self) -> list[dict[str, tuple[float, float, float]]]:
+        """Contact points along each cylindrical leg body.
+
+        Samples N points along each leg at evenly spaced fractions of the leg length,
+        treating each as a sphere of radius leg_radius_m.  When the robot tips onto its
+        side the cylindrical leg bodies contact the floor here, preventing the robot from
+        staying flat on its side.
+        """
+        contacts: list[dict[str, tuple[float, float, float]]] = []
+        for leg in self.robot.legs:
+            foot_offset = leg.foot_offset_from_mount_m()
+            foot_vel_body = leg.foot_velocity_from_mount_m_s()
+            for i, f in enumerate(_LEG_BODY_FRACTIONS):
+                sample_offset_body = _v_scale(foot_offset, f)
+                sample_world = _v_add(
+                    self._body_point_world(leg.mount_point_xyz_m),
+                    self._body_vector_world(sample_offset_body),
+                )
+                sample_vel_body = _v_scale(foot_vel_body, f)
+                sample_vel = _v_add(
+                    self._point_velocity_world(leg.mount_point_xyz_m),
+                    self._body_vector_world(sample_vel_body),
+                )
+                memory = self._leg_body_contact_memory[(leg.name, i)]
+                force, _ = self._compute_contact_force(
+                    point_key=f"{leg.name}_body_{i}",
+                    position=sample_world,
+                    velocity=sample_vel,
+                    static_mu=leg.foot_static_friction,
+                    kinetic_mu=leg.foot_kinetic_friction,
+                    memory=memory,
+                    floor_extra_m=leg.leg_radius_m + self.robot.body.elastic_deformation_m,
+                )
+                if force != (0.0, 0.0, 0.0):
+                    contact_point = (sample_world[0], sample_world[1], sample_world[2] - leg.leg_radius_m)
+                    r_world = _v_sub(contact_point, tuple(self.robot.body.position_xyz_m))
+                    contacts.append({"force": force, "r_world": r_world})
         return contacts
 
     def _compute_contact_force(
@@ -368,13 +434,14 @@ class QuadrupedEnvironment:
         static_mu: float,
         kinetic_mu: float,
         memory: ContactMemory,
+        floor_extra_m: float = 0.0,
     ) -> tuple[tuple[float, float, float], str]:
         del point_key
-        penetration = max(self.floor_height_m - position[2], 0.0)
+        effective_floor = self.floor_height_m + floor_extra_m
         support_gap = self._rest_contact_buffer_m if memory.is_in_contact else 0.0
-        effective_penetration = max((self.floor_height_m + support_gap) - position[2], 0.0)
+        effective_penetration = max((effective_floor + support_gap) - position[2], 0.0)
         normal_force = 0.0
-        if effective_penetration > 0.0 or (position[2] <= self.floor_height_m + 1e-5 and velocity[2] <= 0.0):
+        if effective_penetration > 0.0 or (position[2] <= effective_floor + 1e-5 and velocity[2] <= 0.0):
             unloading_scale = self.unloading_stiffness_scale if velocity[2] > 0.0 else 1.0
             normal_force = (
                 (self.normal_stiffness_n_m * unloading_scale * effective_penetration)

@@ -127,9 +127,13 @@ class QuadrupedDemoApp:
                 color = "#1f7a4d"
             elif state.contact_mode == "kinetic":
                 color = "#c86b1f"
-            self.canvas.create_line(*self._project(mount), *self._project(foot), fill=color, width=4)
-            fx, fy = self._project(foot)
-            self.canvas.create_oval(fx - 6, fy - 6, fx + 6, fy + 6, fill=color, outline="")
+            # Draw cylindrical leg body with hemispherical foot tip.
+            # capstyle=ROUND draws a semicircular cap at the foot end — that IS the hemisphere.
+            # Cap radius = width/2 = 4px, matching the cylinder cross-section.
+            self.canvas.create_line(
+                *self._project(mount), *self._project(foot),
+                fill=color, width=8, capstyle=tk.ROUND,
+            )
 
         com = self.environment.center_of_mass_xyz_m()
         com_xy = self._project(com)

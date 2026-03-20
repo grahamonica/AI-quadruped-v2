@@ -15,6 +15,8 @@ class Leg:
     foot_static_friction: float
     foot_kinetic_friction: float
     mount_point_xyz_m: tuple[float, float, float]
+    leg_radius_m: float = 0.010
+    foot_radius_m: float = 0.015
     imu: IMU = field(default_factory=IMU)
     motor: Motor = field(default_factory=Motor)
     angle_rad: float = 0.0

@@ -30,6 +30,10 @@ LEG_LENGTH_M = 0.16
 LEG_MASS_KG = 0.6
 FOOT_STATIC_FRICTION = 0.9
 FOOT_KINETIC_FRICTION = 0.65
+LEG_RADIUS_M = 0.010
+FOOT_RADIUS_M = 0.010
+ELASTIC_DEFORMATION_M = 0.002
+N_LEG_BODY_SAMPLES = 3
 
 TAU_MEM = 0.020
 V_THRESH = 0.01
@@ -39,6 +43,7 @@ TRACE_DECAY = 0.70
 DEFAULT_MOTOR_NOISE_SCALE = 0.40
 
 EPISODE_S = 30.0
+SINGLE_VIEW_EPISODE_S = 120.0
 BRAIN_DT = 0.050
 MOTOR_SCALE = 6.0
 GOAL_HEIGHT_M = 0.16
@@ -136,6 +141,7 @@ BODY_CORNERS_BODY = jnp.array(
     ],
     dtype=jnp.float32,
 )
+LEG_BODY_FRACTIONS = jnp.array([0.25, 0.50, 0.75], dtype=jnp.float32)
 
 
 class BrainState(NamedTuple):
@@ -160,6 +166,8 @@ class EnvState(NamedTuple):
     leg_anchor_xy: jax.Array
     body_contact_in: jax.Array
     body_anchor_xy: jax.Array
+    leg_body_contact_in: jax.Array
+    leg_body_anchor_xy: jax.Array
     time_s: jax.Array
 
 
@@ -476,16 +484,18 @@ def _contact_force_batch(
     memory_in_contact: jax.Array,
     memory_anchor_xy: jax.Array,
     floor_heights: jax.Array,
+    floor_offset: jax.Array | None = None,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    effective_floor = floor_heights if floor_offset is None else floor_heights + floor_offset
     support_gap = jnp.where(memory_in_contact, REST_CONTACT_BUFFER_M, 0.0)
-    effective_penetration = jnp.maximum((floor_heights + support_gap) - position[:, 2], 0.0)
+    effective_penetration = jnp.maximum((effective_floor + support_gap) - position[:, 2], 0.0)
     unloading_scale = jnp.where(velocity[:, 2] > 0.0, UNLOADING_STIFFNESS_SCALE, 1.0)
     normal_force = (
         (NORMAL_STIFFNESS_N_M * unloading_scale * effective_penetration)
         + (NORMAL_DAMPING_N_S_M * jnp.maximum(-velocity[:, 2], 0.0))
     )
     normal_force = jnp.clip(normal_force, 0.0, MAX_CONTACT_FORCE_N)
-    active = (effective_penetration > 0.0) | ((position[:, 2] <= floor_heights + 1e-5) & (velocity[:, 2] <= 0.0))
+    active = (effective_penetration > 0.0) | ((position[:, 2] <= effective_floor + 1e-5) & (velocity[:, 2] <= 0.0))
     normal_force = jnp.where(active, normal_force, 0.0)
 
     anchor_xy = jnp.where(memory_in_contact[:, None], memory_anchor_xy, position[:, :2])
@@ -524,7 +534,7 @@ def _env_reset(spawn_xy: jax.Array | None = None) -> EnvState:
         spawn_xy = jnp.zeros(2, dtype=jnp.float32)
     spawn_floor_h = _terrain_height_at(spawn_xy)
     initial_body_pos = jnp.array(
-        [spawn_xy[0], spawn_xy[1], spawn_floor_h + LEG_LENGTH_M], dtype=jnp.float32
+        [spawn_xy[0], spawn_xy[1], spawn_floor_h + LEG_LENGTH_M + FOOT_RADIUS_M], dtype=jnp.float32
     )
     initial_body_rot = jnp.zeros((3,), dtype=jnp.float32)
     initial_body_vel = jnp.zeros((3,), dtype=jnp.float32)
@@ -561,6 +571,8 @@ def _env_reset(spawn_xy: jax.Array | None = None) -> EnvState:
         leg_anchor_xy=foot_position[:, :2],
         body_contact_in=body_corner_world[:, 2] <= FLOOR_HEIGHT_M + 1e-5,
         body_anchor_xy=body_corner_world[:, :2],
+        leg_body_contact_in=jnp.zeros((N_LEGS, N_LEG_BODY_SAMPLES), dtype=bool),
+        leg_body_anchor_xy=jnp.zeros((N_LEGS, N_LEG_BODY_SAMPLES, 2), dtype=jnp.float32),
         time_s=jnp.float32(0.0),
     )
 
@@ -590,7 +602,6 @@ def _env_substep(state: EnvState, motor_target: jax.Array) -> EnvState:
         leg_ang_vel,
         leg_ang_acc,
     )
-    del mount_world
     foot_floor_heights = jax.vmap(_terrain_height_at)(foot_position[:, :2])
     leg_force, leg_contact_mode, leg_contact_in, leg_anchor_xy = _contact_force_batch(
         foot_position,
@@ -600,6 +611,7 @@ def _env_substep(state: EnvState, motor_target: jax.Array) -> EnvState:
         state.leg_contact_in,
         state.leg_anchor_xy,
         foot_floor_heights,
+        floor_offset=jnp.full((N_LEGS,), FOOT_RADIUS_M + ELASTIC_DEFORMATION_M, dtype=jnp.float32),
     )
 
     body_corner_world = _body_points_world(state.body_pos, state.body_rot, BODY_CORNERS_BODY)
@@ -616,6 +628,43 @@ def _env_substep(state: EnvState, motor_target: jax.Array) -> EnvState:
         body_floor_heights,
     )
 
+    # Leg body cylinder contact: sample N points along each leg at fractions of leg length.
+    # Uses the cylindrical leg radius as the floor offset so contact activates when the
+    # cylinder surface reaches the floor, not just the centreline.
+    leg_sin = jnp.sin(leg_angle)
+    leg_cos = jnp.cos(leg_angle)
+    foot_offset_body_arr = jnp.stack(
+        [LEG_LENGTH_M * leg_sin, jnp.zeros_like(leg_sin), -LEG_LENGTH_M * leg_cos], axis=1
+    )  # (N_LEGS, 3)
+    foot_vel_body_arr = jnp.stack(
+        [LEG_LENGTH_M * leg_cos * leg_ang_vel, jnp.zeros_like(leg_ang_vel), LEG_LENGTH_M * leg_sin * leg_ang_vel], axis=1
+    )  # (N_LEGS, 3)
+    foot_offset_world_arr = _body_vectors_world(state.body_rot, foot_offset_body_arr)  # (N_LEGS, 3)
+    foot_vel_world_arr = _body_vectors_world(state.body_rot, foot_vel_body_arr)       # (N_LEGS, 3)
+    mount_r_world_arr = mount_world - state.body_pos  # (N_LEGS, 3)
+    mount_vel_world_arr = state.body_vel[None, :] + jnp.cross(state.body_ang_vel[None, :], mount_r_world_arr)  # (N_LEGS, 3)
+    leg_body_sample_pos = (
+        mount_world[:, None, :] + foot_offset_world_arr[:, None, :] * LEG_BODY_FRACTIONS[None, :, None]
+    ).reshape(-1, 3)  # (N_LEGS * N_LEG_BODY_SAMPLES, 3)
+    leg_body_sample_vel = (
+        mount_vel_world_arr[:, None, :] + foot_vel_world_arr[:, None, :] * LEG_BODY_FRACTIONS[None, :, None]
+    ).reshape(-1, 3)  # (N_LEGS * N_LEG_BODY_SAMPLES, 3)
+    leg_body_floor_heights = jax.vmap(_terrain_height_at)(leg_body_sample_pos[:, :2])
+    leg_body_force, _, new_leg_body_contact_in, new_leg_body_anchor_xy = _contact_force_batch(
+        leg_body_sample_pos,
+        leg_body_sample_vel,
+        jnp.full((N_LEGS * N_LEG_BODY_SAMPLES,), FOOT_STATIC_FRICTION, dtype=jnp.float32),
+        jnp.full((N_LEGS * N_LEG_BODY_SAMPLES,), FOOT_KINETIC_FRICTION, dtype=jnp.float32),
+        state.leg_body_contact_in.reshape(-1),
+        state.leg_body_anchor_xy.reshape(-1, 2),
+        leg_body_floor_heights,
+        floor_offset=jnp.full((N_LEGS * N_LEG_BODY_SAMPLES,), LEG_RADIUS_M + ELASTIC_DEFORMATION_M, dtype=jnp.float32),
+    )  # (N_LEGS * N_LEG_BODY_SAMPLES, 3)
+    # Contact force acts at the cylinder surface, LEG_RADIUS_M below the sample centreline.
+    leg_body_contact_r_world = (
+        leg_body_sample_pos - jnp.array([0.0, 0.0, LEG_RADIUS_M], dtype=jnp.float32) - state.body_pos
+    )
+
     total_force = jnp.array([0.0, 0.0, -TOTAL_MASS_KG * GRAVITY_M_S2], dtype=jnp.float32)
     total_torque = jnp.zeros((3,), dtype=jnp.float32)
 
@@ -624,11 +673,14 @@ def _env_substep(state: EnvState, motor_target: jax.Array) -> EnvState:
 
     leg_rot_axis_world = _body_vectors_world(state.body_rot, LEG_ROT_AXIS_BODY)
     rot_reaction = leg_rot_axis_world * jnp.sum(-LEG_INERTIA_ABOUT_MOUNT * leg_ang_acc)
+    # Torque from foot contact acts at the sphere contact point (bottom of sphere).
+    foot_contact_r_world = foot_position - jnp.array([0.0, 0.0, FOOT_RADIUS_M], dtype=jnp.float32) - state.body_pos
     total_torque = total_torque + rot_reaction + jnp.sum(jnp.cross(_body_vectors_world(state.body_rot, MOUNT_POINTS_BODY), inertia_force), axis=0)
-    total_torque = total_torque + jnp.sum(jnp.cross(foot_r_world, leg_force), axis=0) + jnp.sum(jnp.cross(body_corner_r_world, body_force), axis=0)
-    total_force = total_force + jnp.sum(leg_force, axis=0) + jnp.sum(body_force, axis=0)
+    total_torque = total_torque + jnp.sum(jnp.cross(foot_contact_r_world, leg_force), axis=0) + jnp.sum(jnp.cross(body_corner_r_world, body_force), axis=0)
+    total_torque = total_torque + jnp.sum(jnp.cross(leg_body_contact_r_world, leg_body_force), axis=0)
+    total_force = total_force + jnp.sum(leg_force, axis=0) + jnp.sum(body_force, axis=0) + jnp.sum(leg_body_force, axis=0)
 
-    any_grounded = jnp.any(leg_force[:, 2] > 0.0) | jnp.any(body_force[:, 2] > 0.0)
+    any_grounded = jnp.any(leg_force[:, 2] > 0.0) | jnp.any(body_force[:, 2] > 0.0) | jnp.any(leg_body_force[:, 2] > 0.0)
     active_linear_damping = jnp.where(any_grounded, LINEAR_DAMPING_N_S_M, AIRBORNE_LINEAR_DAMPING_N_S_M)
     active_angular_damping = jnp.where(any_grounded, ANGULAR_DAMPING_N_M_S, AIRBORNE_ANGULAR_DAMPING_N_M_S)
 
@@ -665,6 +717,8 @@ def _env_substep(state: EnvState, motor_target: jax.Array) -> EnvState:
         leg_anchor_xy=leg_anchor_xy,
         body_contact_in=body_contact_in,
         body_anchor_xy=body_anchor_xy,
+        leg_body_contact_in=new_leg_body_contact_in.reshape(N_LEGS, N_LEG_BODY_SAMPLES),
+        leg_body_anchor_xy=new_leg_body_anchor_xy.reshape(N_LEGS, N_LEG_BODY_SAMPLES, 2),
         time_s=state.time_s + SUBSTEP_DT_S,
     )
 
@@ -1070,9 +1124,10 @@ class JaxESTrainer:
             dtype=jnp.float32,
         )
 
-    def _run_logged_episode(self, params_flat: jax.Array, goal_xyz: jax.Array, key: jax.Array, on_step: Any) -> float:
+    def _run_logged_episode(self, params_flat: jax.Array, goal_xyz: jax.Array, key: jax.Array, on_step: Any, steps: int | None = None) -> float:
         carry = _episode_init(goal_xyz, key)
-        steps = int(EPISODE_S / BRAIN_DT)
+        if steps is None:
+            steps = int(EPISODE_S / BRAIN_DT)
         for step_i in range(steps):
             carry = _episode_step_logged(params_flat, carry, goal_xyz)
             on_step(_step_snapshot(carry, goal_xyz, step_i, steps))
