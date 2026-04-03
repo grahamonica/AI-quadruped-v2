@@ -1,3 +1,19 @@
-from .trainer import ESTrainer, JaxESTrainer, TrainingState
+from .trainer import (
+    ESTrainer,
+    JaxESTrainer,
+    TrainingState,
+    apply_runtime_spec,
+    current_environment_model,
+    current_robot_model,
+    current_runtime_spec,
+)
 
-__all__ = ["ESTrainer", "JaxESTrainer", "TrainingState"]
+__all__ = [
+    "ESTrainer",
+    "JaxESTrainer",
+    "TrainingState",
+    "apply_runtime_spec",
+    "current_environment_model",
+    "current_robot_model",
+    "current_runtime_spec",
+]

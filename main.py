@@ -1,22 +1,19 @@
-"""Entry point: starts the training server and the React frontend together.
+"""Start the live training API and frontend together."""
 
-Usage:
-    ./venv/bin/python main.py
-
-Ctrl-C shuts down both processes cleanly.
-On the NEXT launch, any leftover processes from the previous run are killed
-via a PID file — this handles force-quits, terminal closures, and SIGKILL.
-"""
 from __future__ import annotations
 
+import argparse
 import atexit
 import os
-import signal
 import shutil
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+from ai.config import DEFAULT_CONFIG_PATH
+
 
 PROJECT = Path(__file__).parent.resolve()
 FRONTEND = PROJECT / "frontend"
@@ -24,36 +21,53 @@ PID_FILE = PROJECT / ".server_pids"
 VENV_PY = PROJECT / "venv" / "bin" / "python"
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Start the live training API and frontend.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Runtime config for the API process.")
+    parser.add_argument("--seed", type=int, default=42, help="Trainer seed for the API process.")
+    parser.add_argument("--api-port", type=int, default=8000, help="Port for the FastAPI websocket service.")
+    parser.add_argument("--frontend-port", type=int, default=5173, help="Port for the Vite frontend.")
+    return parser.parse_args()
+
+
 def _resolve_python() -> str:
+    if Path(sys.executable).exists():
+        return sys.executable
     if VENV_PY.exists():
         return str(VENV_PY)
     python313 = shutil.which("python3.13")
     if python313:
         return python313
+    python3 = shutil.which("python3")
+    if python3:
+        return python3
     return sys.executable
 
 
 _PY = _resolve_python()
 
 
-# ── PID-file helpers ───────────────────────────────────────────────────────────
+def _ensure_runtime_files() -> None:
+    missing: list[str] = []
+    for relative_path in ("server.py", "frontend/package.json", "frontend/index.html"):
+        if not (PROJECT / relative_path).exists():
+            missing.append(relative_path)
+    if missing:
+        raise SystemExit("Cannot start the UI stack because required runtime files are missing: " + ", ".join(missing))
+
 
 def _save_pids(*pids: int) -> None:
-    PID_FILE.write_text("\n".join(str(p) for p in pids if p))
+    PID_FILE.write_text("\n".join(str(pid) for pid in pids if pid), encoding="utf-8")
 
 
 def _kill_from_pid_file() -> None:
-    """Kill any processes recorded from the previous run."""
     if not PID_FILE.exists():
         return
-    pids = PID_FILE.read_text().split()
     killed = 0
-    for pid_str in pids:
+    for pid_str in PID_FILE.read_text(encoding="utf-8").split():
         try:
             pid = int(pid_str)
-            # Kill the process and all its children
-            subprocess.run(["pkill", "-KILL", "-P", str(pid)],
-                           capture_output=True)
+            subprocess.run(["pkill", "-KILL", "-P", str(pid)], capture_output=True)
             os.kill(pid, signal.SIGKILL)
             killed += 1
         except (ProcessLookupError, ValueError, OSError):
@@ -64,106 +78,86 @@ def _kill_from_pid_file() -> None:
         time.sleep(0.4)
 
 
-def _kill_orphan_trainers() -> None:
-    """Kill any lingering multiprocessing training children by name."""
-    result = subprocess.run(
-        ["pgrep", "-f", "multiprocessing.spawn import spawn_main"],
-        capture_output=True, text=True,
-    )
-    pids = result.stdout.strip().split()
-    for pid in pids:
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-        except (ProcessLookupError, ValueError):
-            pass
-    if pids:
-        print(f"  killed {len(pids)} orphaned training process(es)")
-        time.sleep(0.3)
-
-
 def _kill_port(port: int) -> None:
-    result = subprocess.run(
-        ["lsof", "-ti", f":{port}"], capture_output=True, text=True,
-    )
-    pids = result.stdout.strip().split()
-    for pid in pids:
+    result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
+    for pid in result.stdout.strip().split():
         try:
             os.kill(int(pid), signal.SIGKILL)
         except (ProcessLookupError, ValueError):
             pass
-    if pids:
-        time.sleep(0.5)
+    if result.stdout.strip():
+        time.sleep(0.4)
 
 
-# ── Process launchers ──────────────────────────────────────────────────────────
-
-def _start_server() -> subprocess.Popen:
+def _start_server(api_port: int, config: Path, seed: int) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["QUADRUPED_CONFIG"] = str(config.resolve())
+    env["QUADRUPED_SEED"] = str(seed)
     return subprocess.Popen(
-        [_PY, "-m", "uvicorn", "server:app",
-         "--host", "0.0.0.0", "--port", "8000", "--log-level", "warning"],
+        [_PY, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", str(api_port), "--log-level", "warning"],
         cwd=PROJECT,
+        env=env,
     )
 
 
-def _start_frontend() -> subprocess.Popen:
+def _start_frontend(frontend_port: int) -> subprocess.Popen:
     return subprocess.Popen(
-        ["npm", "run", "dev", "--", "--port", "5173"],
+        ["npm", "run", "dev", "--", "--port", str(frontend_port)],
         cwd=FRONTEND,
     )
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
-
 def main() -> None:
+    args = _parse_args()
+    _ensure_runtime_files()
+
     print("Clearing previous run…")
     _kill_from_pid_file()
-    _kill_orphan_trainers()
-    _kill_port(8000)
-    _kill_port(5173)
+    _kill_port(args.api_port)
+    _kill_port(args.frontend_port)
 
-    procs: list[subprocess.Popen] = []
+    processes: list[subprocess.Popen] = []
 
-    def _shutdown(sig=None, frame=None) -> None:
+    def _shutdown(_sig=None, _frame=None, *, exit_process: bool = True) -> None:
         print("\nShutting down…")
-        for p in procs:
+        for process in processes:
             try:
-                p.terminate()
+                process.terminate()
             except Exception:
                 pass
         time.sleep(1)
-        for p in procs:
+        for process in processes:
             try:
-                if p.poll() is None:
-                    p.kill()
+                if process.poll() is None:
+                    process.kill()
             except Exception:
                 pass
-        _kill_orphan_trainers()
         PID_FILE.unlink(missing_ok=True)
-        sys.exit(0)
+        if exit_process:
+            raise SystemExit(0)
 
-    atexit.register(_shutdown)
+    atexit.register(lambda: _shutdown(exit_process=False))
     signal.signal(signal.SIGINT, _shutdown)
     signal.signal(signal.SIGTERM, _shutdown)
 
-    server = _start_server()
-    procs.append(server)
+    server = _start_server(args.api_port, args.config, args.seed)
+    processes.append(server)
     time.sleep(1)
 
-    frontend = _start_frontend()
-    procs.append(frontend)
-
-    # Record PIDs so the next launch can clean them up even after a force-quit
+    frontend = _start_frontend(args.frontend_port)
+    processes.append(frontend)
     _save_pids(server.pid, frontend.pid)
 
     print(f"Python          : {_PY}")
-    print("Training server : http://localhost:8000")
-    print("Frontend        : http://localhost:5173")
+    print(f"Config          : {args.config.resolve()}")
+    print(f"Training server : http://localhost:{args.api_port}")
+    print(f"Frontend        : http://localhost:{args.frontend_port}")
     print("Press Ctrl-C to stop.\n")
 
     while True:
-        for p in procs:
-            if p.poll() is not None:
-                print(f"Process {p.args[0]} exited with code {p.returncode}")
+        for process in processes:
+            if process.poll() is not None:
+                print(f"Process {process.args[0]} exited with code {process.returncode}")
                 _shutdown()
         time.sleep(1)
 

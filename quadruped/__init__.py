@@ -1,16 +1,23 @@
-from .body import Body
-from .environment import LegForceState, QuadrupedEnvironment
-from .imu import IMU
-from .leg import Leg
-from .motor import Motor
-from .robot import Quadruped
+"""Domain-layer models for the quadruped runtime."""
+
+from .body import BodySpec
+from .environment import EpisodeModel, PhysicsModel, RewardModel, SimulationEnvironment, TaskModel, TerrainModel, TrainingModel
+from .leg import LEG_ROTATION_AXIS_BODY, LegSpec
+from .motor import MotorSpec
+from .robot import LEG_NAMES, QuadrupedRobot
 
 __all__ = [
-    "Body",
-    "IMU",
-    "Leg",
-    "LegForceState",
-    "Motor",
-    "Quadruped",
-    "QuadrupedEnvironment",
+    "BodySpec",
+    "EpisodeModel",
+    "LEG_NAMES",
+    "LEG_ROTATION_AXIS_BODY",
+    "LegSpec",
+    "MotorSpec",
+    "PhysicsModel",
+    "QuadrupedRobot",
+    "RewardModel",
+    "SimulationEnvironment",
+    "TaskModel",
+    "TerrainModel",
+    "TrainingModel",
 ]

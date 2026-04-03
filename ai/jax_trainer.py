@@ -11,6 +11,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from ai.config import RuntimeSpec, canonical_config_json, default_runtime_spec
+from quadruped import LEG_ROTATION_AXIS_BODY, QuadrupedRobot, SimulationEnvironment
+
 
 # Robot / physics constants mirror the current KT2-style defaults.
 N_IN = 48
@@ -143,6 +146,10 @@ BODY_CORNERS_BODY = jnp.array(
 )
 LEG_BODY_FRACTIONS = jnp.array([0.25, 0.50, 0.75], dtype=jnp.float32)
 
+ACTIVE_SPEC: RuntimeSpec = default_runtime_spec()
+ACTIVE_ROBOT_MODEL: QuadrupedRobot = QuadrupedRobot.from_runtime_spec(ACTIVE_SPEC)
+ACTIVE_ENVIRONMENT_MODEL: SimulationEnvironment = SimulationEnvironment.from_runtime_spec(ACTIVE_SPEC)
+
 
 class BrainState(NamedTuple):
     v_shared: jax.Array
@@ -201,6 +208,151 @@ class TrainingState:
     goal_xyz: tuple[float, float, float] = (1.0, 0.0, GOAL_HEIGHT_M)
     robot_state: dict[str, Any] = field(default_factory=dict)
     rewards_history: list[float] = field(default_factory=list)
+
+
+def current_runtime_spec() -> RuntimeSpec:
+    return ACTIVE_SPEC
+
+
+def current_robot_model() -> QuadrupedRobot:
+    return ACTIVE_ROBOT_MODEL
+
+
+def current_environment_model() -> SimulationEnvironment:
+    return ACTIVE_ENVIRONMENT_MODEL
+
+
+def apply_runtime_spec(spec: RuntimeSpec | None = None) -> RuntimeSpec:
+    global ACTIVE_SPEC
+    global ACTIVE_ROBOT_MODEL, ACTIVE_ENVIRONMENT_MODEL
+    global BODY_LENGTH_M, BODY_WIDTH_M, BODY_HEIGHT_M, BODY_MASS_KG
+    global LEG_LENGTH_M, LEG_MASS_KG, LEG_RADIUS_M, FOOT_RADIUS_M, ELASTIC_DEFORMATION_M, N_LEG_BODY_SAMPLES
+    global FOOT_STATIC_FRICTION, FOOT_KINETIC_FRICTION, BODY_CONTACT_FRICTION
+    global DT, EPISODE_S, SINGLE_VIEW_EPISODE_S, BRAIN_DT, DEFAULT_LIFESPAN_S, TIPPED_KILL_TIME_S
+    global SELECTION_INTERVAL_S, LIFESPAN_BONUS_S, SELECTION_TOP_FRAC, SELECTION_BOT_FRAC, GOAL_REACHED_RADIUS_M
+    global MOTOR_SCALE, MAX_MOTOR_RAD_S, MOTOR_MAX_ANGULAR_ACCELERATION_RAD_S2, MOTOR_VISCOUS_DAMPING_PER_S
+    global MOTOR_VELOCITY_FILTER_TAU_S, GOAL_HEIGHT_M, FIELD_HALF, POP_SIZE, SIGMA, LR, PARENT_ELITE_COUNT
+    global DEFAULT_MOTOR_NOISE_SCALE, MAX_MOTOR_NOISE_SCALE, FAST_PROGRESS_TAU_S, SLOW_PROGRESS_TAU_S
+    global DRAMATIC_PROGRESS_DROP_RATIO, NOISE_ATTACK_TAU_S, NOISE_RELEASE_TAU_S, SIDE_TIP_BAND_HALF_WIDTH_RAD
+    global SIDE_TIP_DEPTH_PENALTY_SCALE, SIDE_TIP_ESCAPE_DELTA_SCALE, SIDE_TIP_EXIT_BONUS
+    global PROGRESS_REWARD_SCALE, GOAL_REACHED_BONUS, FOOT_LEVEL_REWARD_SCALE, STEP_CLIMB_BONUS, ESCAPE_BONUS
+    global ARENA_CENTER_HALF, N_ARENA_STEPS, ARENA_STEP_WIDTH_M, ARENA_STEP_HEIGHT_M, FLOOR_HEIGHT_M
+    global GRAVITY_M_S2, NORMAL_STIFFNESS_N_M, NORMAL_DAMPING_N_S_M, TANGENTIAL_STIFFNESS_N_M
+    global TANGENTIAL_DAMPING_N_S_M, ANGULAR_DAMPING_N_M_S, LINEAR_DAMPING_N_S_M
+    global AIRBORNE_LINEAR_DAMPING_N_S_M, AIRBORNE_ANGULAR_DAMPING_N_M_S, MAX_CONTACT_FORCE_N
+    global MAX_SUBSTEP_S, UNLOADING_STIFFNESS_SCALE, SLEEP_LINEAR_SPEED_THRESHOLD_M_S
+    global SLEEP_ANGULAR_SPEED_THRESHOLD_RAD_S, TOTAL_MASS_KG, BODY_HALF_EXTENTS, BODY_PRINCIPAL_INERTIA
+    global LEG_INERTIA_ABOUT_MOUNT, REST_CONTACT_BUFFER_M, SUBSTEP_COUNT, SUBSTEP_DT_S, MOUNT_POINTS_BODY
+    global BODY_CORNERS_BODY, LEG_BODY_FRACTIONS, LEG_NAMES, LEG_ROT_AXIS_BODY
+
+    runtime_spec = spec or default_runtime_spec()
+    runtime_spec.validate()
+    ACTIVE_SPEC = runtime_spec
+    ACTIVE_ROBOT_MODEL = QuadrupedRobot.from_runtime_spec(runtime_spec)
+    ACTIVE_ENVIRONMENT_MODEL = SimulationEnvironment.from_runtime_spec(runtime_spec)
+
+    body = ACTIVE_ROBOT_MODEL.body
+    motor = ACTIVE_ROBOT_MODEL.motor
+    legs = ACTIVE_ROBOT_MODEL.legs
+    terrain = ACTIVE_ENVIRONMENT_MODEL.terrain
+    task = ACTIVE_ENVIRONMENT_MODEL.task
+    physics = ACTIVE_ENVIRONMENT_MODEL.physics
+    episode = ACTIVE_ENVIRONMENT_MODEL.episode
+    reward = ACTIVE_ENVIRONMENT_MODEL.reward
+    training = ACTIVE_ENVIRONMENT_MODEL.training
+
+    BODY_LENGTH_M = float(body.length_m)
+    BODY_WIDTH_M = float(body.width_m)
+    BODY_HEIGHT_M = float(body.height_m)
+    BODY_MASS_KG = float(body.mass_kg)
+    LEG_LENGTH_M = float(legs[0].length_m)
+    LEG_MASS_KG = float(legs[0].mass_kg)
+    LEG_RADIUS_M = float(legs[0].radius_m)
+    FOOT_RADIUS_M = float(legs[0].foot_radius_m)
+    ELASTIC_DEFORMATION_M = float(legs[0].elastic_deformation_m)
+    N_LEG_BODY_SAMPLES = int(legs[0].body_contact_samples)
+    LEG_NAMES = ACTIVE_ROBOT_MODEL.leg_names
+
+    FOOT_STATIC_FRICTION = float(legs[0].static_friction)
+    FOOT_KINETIC_FRICTION = float(legs[0].kinetic_friction)
+    BODY_CONTACT_FRICTION = float(body.contact_friction)
+
+    MOTOR_SCALE = float(motor.control_scale_rad_s)
+    MAX_MOTOR_RAD_S = float(motor.max_velocity_rad_s)
+    MOTOR_MAX_ANGULAR_ACCELERATION_RAD_S2 = float(motor.max_angular_acceleration_rad_s2)
+    MOTOR_VISCOUS_DAMPING_PER_S = float(motor.viscous_damping_per_s)
+    MOTOR_VELOCITY_FILTER_TAU_S = float(motor.velocity_filter_tau_s)
+
+    DT = float(episode.neuron_dt_s)
+    BRAIN_DT = float(episode.brain_dt_s)
+    EPISODE_S = float(episode.episode_s)
+    SINGLE_VIEW_EPISODE_S = float(episode.single_view_episode_s)
+    DEFAULT_LIFESPAN_S = float(episode.default_lifespan_s)
+    TIPPED_KILL_TIME_S = float(episode.tipped_kill_time_s)
+    SELECTION_INTERVAL_S = float(episode.selection_interval_s)
+    LIFESPAN_BONUS_S = float(episode.lifespan_bonus_s)
+    SELECTION_TOP_FRAC = float(episode.selection_top_frac)
+    SELECTION_BOT_FRAC = float(episode.selection_bot_frac)
+    GOAL_REACHED_RADIUS_M = float(episode.goal_reached_radius_m)
+
+    GOAL_HEIGHT_M = float(task.goal_height_m)
+    FIELD_HALF = float(terrain.field_half_m)
+    POP_SIZE = int(training.population_size)
+    SIGMA = float(training.sigma)
+    LR = float(training.learning_rate)
+    PARENT_ELITE_COUNT = int(training.parent_elite_count)
+
+    DEFAULT_MOTOR_NOISE_SCALE = float(reward.default_motor_noise_scale)
+    MAX_MOTOR_NOISE_SCALE = float(reward.max_motor_noise_scale)
+    FAST_PROGRESS_TAU_S = float(reward.fast_progress_tau_s)
+    SLOW_PROGRESS_TAU_S = float(reward.slow_progress_tau_s)
+    DRAMATIC_PROGRESS_DROP_RATIO = float(reward.dramatic_progress_drop_ratio)
+    NOISE_ATTACK_TAU_S = float(reward.noise_attack_tau_s)
+    NOISE_RELEASE_TAU_S = float(reward.noise_release_tau_s)
+    SIDE_TIP_BAND_HALF_WIDTH_RAD = math.radians(float(reward.side_tip_band_half_width_deg))
+    SIDE_TIP_DEPTH_PENALTY_SCALE = float(reward.side_tip_depth_penalty_scale)
+    SIDE_TIP_ESCAPE_DELTA_SCALE = float(reward.side_tip_escape_delta_scale)
+    SIDE_TIP_EXIT_BONUS = float(reward.side_tip_exit_bonus)
+    PROGRESS_REWARD_SCALE = float(reward.progress_reward_scale)
+    GOAL_REACHED_BONUS = float(reward.goal_reached_bonus)
+    FOOT_LEVEL_REWARD_SCALE = float(reward.foot_level_reward_scale)
+    STEP_CLIMB_BONUS = float(reward.step_climb_bonus)
+    ESCAPE_BONUS = float(reward.escape_bonus)
+
+    ARENA_CENTER_HALF = float(terrain.center_half_m)
+    N_ARENA_STEPS = int(terrain.step_count)
+    ARENA_STEP_WIDTH_M = float(terrain.step_width_m)
+    ARENA_STEP_HEIGHT_M = float(terrain.step_height_m)
+    FLOOR_HEIGHT_M = float(terrain.floor_height_m)
+
+    GRAVITY_M_S2 = float(physics.gravity_m_s2)
+    NORMAL_STIFFNESS_N_M = float(physics.normal_stiffness_n_m)
+    NORMAL_DAMPING_N_S_M = float(physics.normal_damping_n_s_m)
+    TANGENTIAL_STIFFNESS_N_M = float(physics.tangential_stiffness_n_m)
+    TANGENTIAL_DAMPING_N_S_M = float(physics.tangential_damping_n_s_m)
+    ANGULAR_DAMPING_N_M_S = float(physics.angular_damping_n_m_s)
+    LINEAR_DAMPING_N_S_M = float(physics.linear_damping_n_s_m)
+    AIRBORNE_LINEAR_DAMPING_N_S_M = float(physics.airborne_linear_damping_n_s_m)
+    AIRBORNE_ANGULAR_DAMPING_N_M_S = float(physics.airborne_angular_damping_n_m_s)
+    MAX_CONTACT_FORCE_N = float(physics.max_contact_force_n)
+    MAX_SUBSTEP_S = float(physics.max_substep_s)
+    UNLOADING_STIFFNESS_SCALE = float(physics.unloading_stiffness_scale)
+    SLEEP_LINEAR_SPEED_THRESHOLD_M_S = float(physics.sleep_linear_speed_threshold_m_s)
+    SLEEP_ANGULAR_SPEED_THRESHOLD_RAD_S = float(physics.sleep_angular_speed_threshold_rad_s)
+
+    TOTAL_MASS_KG = float(ACTIVE_ROBOT_MODEL.total_mass_kg)
+    BODY_HALF_EXTENTS = jnp.asarray(body.half_extents_m, dtype=jnp.float32)
+    BODY_PRINCIPAL_INERTIA = jnp.asarray(body.principal_inertia, dtype=jnp.float32)
+    LEG_INERTIA_ABOUT_MOUNT = jnp.asarray(ACTIVE_ROBOT_MODEL.leg_inertia_about_mount, dtype=jnp.float32)
+    LEG_ROT_AXIS_BODY = jnp.asarray(LEG_ROTATION_AXIS_BODY, dtype=jnp.float32)
+    REST_CONTACT_BUFFER_M = (TOTAL_MASS_KG * GRAVITY_M_S2) / (max(N_LEGS, 1) * NORMAL_STIFFNESS_N_M)
+    SUBSTEP_COUNT = int(math.ceil(BRAIN_DT / MAX_SUBSTEP_S))
+    SUBSTEP_DT_S = BRAIN_DT / SUBSTEP_COUNT
+    MOUNT_POINTS_BODY = jnp.asarray(ACTIVE_ROBOT_MODEL.mount_points_body, dtype=jnp.float32)
+    BODY_CORNERS_BODY = jnp.asarray(ACTIVE_ROBOT_MODEL.body_corners_body, dtype=jnp.float32)
+    LEG_BODY_FRACTIONS = jnp.asarray(ACTIVE_ROBOT_MODEL.leg_body_fractions, dtype=jnp.float32)
+    jax.clear_caches()
+    return ACTIVE_SPEC
 
 
 PARAM_SPECS = [
@@ -274,19 +426,23 @@ def _ema_alpha(dt_s: float, tau_s: float) -> jax.Array:
 
 
 def _terrain_height_at(xy: jax.Array) -> jax.Array:
-    """Floor height at world XY position for the stepped arena.
-
-    Center square (L-inf radius <= ARENA_CENTER_HALF) is at height 0.
-    Each 2-m-wide ring outside adds one step of ARENA_STEP_HEIGHT_M.
-    """
+    """Floor height at world XY position for the active terrain."""
+    if ACTIVE_SPEC.terrain.kind == "flat":
+        return jnp.float32(FLOOR_HEIGHT_M)
     r = jnp.maximum(jnp.abs(xy[0]), jnp.abs(xy[1]))
     raw = (r - jnp.float32(ARENA_CENTER_HALF)) / jnp.float32(ARENA_STEP_WIDTH_M)
     step_idx = jnp.clip(jnp.floor(raw + 1e-6), 0.0, float(N_ARENA_STEPS))
-    return jnp.where(r > jnp.float32(ARENA_CENTER_HALF), step_idx * jnp.float32(ARENA_STEP_HEIGHT_M), jnp.float32(0.0))
+    return jnp.where(
+        r > jnp.float32(ARENA_CENTER_HALF),
+        jnp.float32(FLOOR_HEIGHT_M) + (step_idx * jnp.float32(ARENA_STEP_HEIGHT_M)),
+        jnp.float32(FLOOR_HEIGHT_M),
+    )
 
 
 def _step_level_at(xy: jax.Array) -> jax.Array:
     """Integer step level (0 = center, 1-5 = steps) at world XY."""
+    if ACTIVE_SPEC.terrain.kind == "flat":
+        return jnp.float32(0.0)
     r = jnp.maximum(jnp.abs(xy[0]), jnp.abs(xy[1]))
     raw = (r - jnp.float32(ARENA_CENTER_HALF)) / jnp.float32(ARENA_STEP_WIDTH_M)
     step_idx = jnp.clip(jnp.floor(raw + 1e-6), 0.0, float(N_ARENA_STEPS))
@@ -555,7 +711,10 @@ def _env_reset(spawn_xy: jax.Array | None = None) -> EnvState:
         jnp.zeros((N_LEGS,), dtype=jnp.float32),
     )
     del mount_world
+    foot_floor_heights = jax.vmap(_terrain_height_at)(foot_position[:, :2])
+    foot_in_contact = foot_position[:, 2] <= (foot_floor_heights + FOOT_RADIUS_M + ELASTIC_DEFORMATION_M + 1e-5)
     body_corner_world = _body_points_world(initial_body_pos, initial_body_rot, BODY_CORNERS_BODY)
+    body_floor_heights = jax.vmap(_terrain_height_at)(body_corner_world[:, :2])
     return EnvState(
         body_pos=initial_body_pos,
         body_vel=initial_body_vel,
@@ -566,10 +725,10 @@ def _env_reset(spawn_xy: jax.Array | None = None) -> EnvState:
         motor_target=initial_motor_target,
         motor_current=initial_motor_current,
         motor_smoothed_target=initial_motor_smoothed,
-        leg_contact_mode=jnp.ones((N_LEGS,), dtype=jnp.int32),
-        leg_contact_in=jnp.ones((N_LEGS,), dtype=bool),
+        leg_contact_mode=foot_in_contact.astype(jnp.int32),
+        leg_contact_in=foot_in_contact,
         leg_anchor_xy=foot_position[:, :2],
-        body_contact_in=body_corner_world[:, 2] <= FLOOR_HEIGHT_M + 1e-5,
+        body_contact_in=body_corner_world[:, 2] <= body_floor_heights + 1e-5,
         body_anchor_xy=body_corner_world[:, :2],
         leg_body_contact_in=jnp.zeros((N_LEGS, N_LEG_BODY_SAMPLES), dtype=bool),
         leg_body_anchor_xy=jnp.zeros((N_LEGS, N_LEG_BODY_SAMPLES, 2), dtype=jnp.float32),
@@ -999,6 +1158,21 @@ def _single_init(goal_xyz: jax.Array, key: jax.Array, spawn_xy: jax.Array) -> Ep
     return _episode_init(goal_xyz, key, spawn_xy)
 
 
+def _sample_spawn_batch(key: jax.Array, count: int) -> jax.Array:
+    if ACTIVE_SPEC.spawn_policy.strategy == "origin":
+        return jnp.zeros((count, 2), dtype=jnp.float32)
+    if ACTIVE_SPEC.spawn_policy.strategy == "fixed_points":
+        fixed_points = jnp.asarray(ACTIVE_SPEC.spawn_policy.fixed_points, dtype=jnp.float32)
+        indices = jax.random.randint(key, (count,), 0, fixed_points.shape[0])
+        return fixed_points[indices]
+    x_min, x_max = ACTIVE_SPEC.spawn_policy.x_range_m
+    y_min, y_max = ACTIVE_SPEC.spawn_policy.y_range_m
+    x_key, y_key = jax.random.split(key)
+    x_values = jax.random.uniform(x_key, (count,), minval=x_min, maxval=x_max, dtype=jnp.float32)
+    y_values = jax.random.uniform(y_key, (count,), minval=y_min, maxval=y_max, dtype=jnp.float32)
+    return jnp.stack([x_values, y_values], axis=1)
+
+
 def _replace_carry_at(carries: EpisodeCarry, idx: int, new_carry: EpisodeCarry) -> EpisodeCarry:
     return jax.tree.map(lambda b, s: b.at[idx].set(s), carries, new_carry)
 
@@ -1076,9 +1250,15 @@ def _step_snapshot(carry: EpisodeCarry, goal_xyz: jax.Array, step: int, total_st
 class JaxESTrainer:
     """Headless ES trainer running the network and simulator on a JAX backend."""
 
-    def __init__(self, seed: int = 42) -> None:
+    def __init__(self, seed: int = 42, spec: RuntimeSpec | None = None) -> None:
+        self.spec = apply_runtime_spec(spec or current_runtime_spec())
         self.seed = seed
         self.state = TrainingState()
+        self.state.goal_xyz = (
+            float(self.spec.goals.radius_m) if self.spec.goals.strategy != "fixed" else float(self.spec.goals.fixed_goal_xyz[0]),
+            0.0 if self.spec.goals.strategy != "fixed" else float(self.spec.goals.fixed_goal_xyz[1]),
+            float(self.spec.goals.height_m) if self.spec.goals.strategy != "fixed" else float(self.spec.goals.fixed_goal_xyz[2]),
+        )
         self._key = jax.random.PRNGKey(seed)
         self._key, init_key = jax.random.split(self._key)
         self._params = _init_param_vector(init_key)
@@ -1116,13 +1296,12 @@ class JaxESTrainer:
         return self._top_generations.copy()
 
     def _random_goal(self) -> jax.Array:
+        if self.spec.goals.strategy == "fixed" and self.spec.goals.fixed_goal_xyz is not None:
+            return jnp.asarray(self.spec.goals.fixed_goal_xyz, dtype=jnp.float32)
         self._key, angle_key = jax.random.split(self._key, 2)
         angle = jax.random.uniform(angle_key, (), minval=0.0, maxval=2.0 * jnp.pi)
-        radius = 10.0
-        return jnp.array(
-            [radius * jnp.cos(angle), radius * jnp.sin(angle), GOAL_HEIGHT_M],
-            dtype=jnp.float32,
-        )
+        radius = float(self.spec.goals.radius_m)
+        return jnp.array([radius * jnp.cos(angle), radius * jnp.sin(angle), GOAL_HEIGHT_M], dtype=jnp.float32)
 
     def _run_logged_episode(self, params_flat: jax.Array, goal_xyz: jax.Array, key: jax.Array, on_step: Any, steps: int | None = None) -> float:
         carry = _episode_init(goal_xyz, key)
@@ -1220,13 +1399,14 @@ class JaxESTrainer:
         wire-frame rendering in the frontend.
         """
         N = POP_SIZE
-        GOAL_RADIUS = 12.0
         LIFESPAN = int(DEFAULT_LIFESPAN_S / BRAIN_DT)
 
         def _random_outward_goals(key: jax.Array, n: int) -> jax.Array:
+            if self.spec.goals.strategy == "fixed" and self.spec.goals.fixed_goal_xyz is not None:
+                return jnp.tile(jnp.asarray(self.spec.goals.fixed_goal_xyz, dtype=jnp.float32)[None, :], (n, 1))
             angles = jax.random.uniform(key, (n,), minval=0.0, maxval=2.0 * jnp.pi)
-            gx = GOAL_RADIUS * jnp.cos(angles)
-            gy = GOAL_RADIUS * jnp.sin(angles)
+            gx = float(self.spec.goals.radius_m) * jnp.cos(angles)
+            gy = float(self.spec.goals.radius_m) * jnp.sin(angles)
             gz = jnp.full((n,), GOAL_HEIGHT_M, dtype=jnp.float32)
             return jnp.stack([gx, gy, gz], axis=1)
 
@@ -1240,7 +1420,7 @@ class JaxESTrainer:
         params_jax = jnp.asarray(center_np[None, :] + noise_np)   # (N, PARAM_COUNT)
         goals_jax = _random_outward_goals(gk, N)                   # (N, 3)
         eval_keys = jax.random.split(kk, N)
-        spawn_xys = jax.random.uniform(sk, (N, 2), minval=-2.0, maxval=2.0, dtype=jnp.float32)
+        spawn_xys = _sample_spawn_batch(sk, N)
 
         carries = _batch_init_goals(goals_jax, eval_keys, spawn_xys)
         lifespan_steps = np.full(N, LIFESPAN, dtype=np.int32)
@@ -1318,7 +1498,7 @@ class JaxESTrainer:
                     new_goal = _random_outward_goals(gk2, 1)[0]
                     goals_jax = goals_jax.at[idx].set(new_goal)
 
-                    new_spawn = jax.random.uniform(sk2, (2,), minval=-2.0, maxval=2.0, dtype=jnp.float32)
+                    new_spawn = _sample_spawn_batch(sk2, 1)[0]
                     new_carry = _single_init(new_goal, kk2, new_spawn)
                     carries = _replace_carry_at(carries, idx, new_carry)
                     lifespan_steps[idx] = LIFESPAN
@@ -1349,7 +1529,7 @@ class JaxESTrainer:
         noise = jax.random.normal(noise_key, (POP_SIZE, PARAM_COUNT), dtype=jnp.float32) * jnp.float32(SIGMA)
         params_batch = self._params[None, :] + noise
         eval_keys = jax.random.split(eval_key, POP_SIZE)
-        spawn_xys = jax.random.uniform(spawn_key, (POP_SIZE, 2), minval=-2.0, maxval=2.0, dtype=jnp.float32)
+        spawn_xys = _sample_spawn_batch(spawn_key, POP_SIZE)
 
         returns_np = self._run_swarm_episode(
             params_batch, goal_xyz, eval_keys, spawn_xys,
@@ -1436,6 +1616,8 @@ class JaxESTrainer:
             "rng_key": np.asarray(self._key, dtype=np.uint32),
             "seed": np.int32(self.seed),
             "backend": np.array(self.backend),
+            "config_json": np.array(canonical_config_json(self.spec)),
+            "config_name": np.array(self.spec.name),
         }
 
     def save_checkpoint(self, path: str | Path) -> Path:
@@ -1447,8 +1629,28 @@ class JaxESTrainer:
     def load_checkpoint(self, path: str | Path) -> None:
         checkpoint_path = Path(path)
         with np.load(checkpoint_path, allow_pickle=False) as checkpoint:
+            if "config_json" in checkpoint.files:
+                checkpoint_config_json = str(checkpoint["config_json"].item())
+                if checkpoint_config_json != canonical_config_json(self.spec):
+                    raise ValueError(
+                        "Checkpoint config does not match the active runtime spec. "
+                        "Use the same config file to resume training."
+                    )
+            params = checkpoint["params"]
+            if params.shape != (PARAM_COUNT,):
+                raise ValueError(
+                    f"Checkpoint parameter shape {params.shape} does not match active model shape {(PARAM_COUNT,)}."
+                )
             self._params = jnp.asarray(checkpoint["params"], dtype=jnp.float32)
-            self._top_params = checkpoint["top_params"].astype(np.float32) if "top_params" in checkpoint.files else np.zeros((0, PARAM_COUNT), dtype=np.float32)
+            if "top_params" in checkpoint.files:
+                top_params = checkpoint["top_params"].astype(np.float32)
+                if top_params.ndim != 2 or top_params.shape[1] != PARAM_COUNT:
+                    raise ValueError(
+                        f"Checkpoint top_params shape {top_params.shape} does not match active model width {PARAM_COUNT}."
+                    )
+                self._top_params = top_params
+            else:
+                self._top_params = np.zeros((0, PARAM_COUNT), dtype=np.float32)
             self._top_rewards = checkpoint["top_rewards"].astype(np.float32) if "top_rewards" in checkpoint.files else np.zeros((0,), dtype=np.float32)
             self._top_indices = checkpoint["top_indices"].astype(np.int32) if "top_indices" in checkpoint.files else np.zeros((0,), dtype=np.int32)
             self.state.generation = int(checkpoint["generation"])
@@ -1475,10 +1677,16 @@ class JaxESTrainer:
 
 ESTrainer = JaxESTrainer
 
+apply_runtime_spec(ACTIVE_SPEC)
+
 __all__ = [
     "EPISODE_S",
     "POP_SIZE",
     "TrainingState",
     "JaxESTrainer",
     "ESTrainer",
+    "apply_runtime_spec",
+    "current_environment_model",
+    "current_robot_model",
+    "current_runtime_spec",
 ]

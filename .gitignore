@@ -23,3 +23,5 @@ frontend/dist/
 
 # Runtime state
 .server_pids
+.single_pids
+logs/

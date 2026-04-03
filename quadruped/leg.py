@@ -1,71 +1,52 @@
+"""Leg-level domain model for the quadruped."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from math import cos, sin
-
-from .imu import IMU
-from .motor import Motor
+from dataclasses import dataclass
 
 
-@dataclass
-class Leg:
+LEG_ROTATION_AXIS_BODY = (0.0, 1.0, 0.0)
+
+
+@dataclass(frozen=True)
+class LegSpec:
     name: str
+    mount_point_body: tuple[float, float, float]
     length_m: float
     mass_kg: float
-    foot_static_friction: float
-    foot_kinetic_friction: float
-    mount_point_xyz_m: tuple[float, float, float]
-    leg_radius_m: float = 0.010
-    foot_radius_m: float = 0.015
-    imu: IMU = field(default_factory=IMU)
-    motor: Motor = field(default_factory=Motor)
-    angle_rad: float = 0.0
-    angular_velocity_rad_s: float = 0.0
-    angular_acceleration_rad_s2: float = 0.0
+    radius_m: float
+    foot_radius_m: float
+    elastic_deformation_m: float
+    static_friction: float
+    kinetic_friction: float
+    body_contact_samples: int
+    rotation_axis_body: tuple[float, float, float] = LEG_ROTATION_AXIS_BODY
 
-    def advance_motor(self, dt_s: float) -> None:
-        self.angular_acceleration_rad_s2 = self.motor.step(dt_s)
-        self.angular_velocity_rad_s = self.motor.current_velocity_rad_s
-        self.angle_rad += self.angular_velocity_rad_s * dt_s
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("Leg name must be non-empty.")
+        for field_name, value in (
+            ("length_m", self.length_m),
+            ("mass_kg", self.mass_kg),
+            ("radius_m", self.radius_m),
+            ("foot_radius_m", self.foot_radius_m),
+        ):
+            if value <= 0.0:
+                raise ValueError(f"Leg {field_name} must be > 0.")
+        if self.elastic_deformation_m < 0.0:
+            raise ValueError("Leg elastic_deformation_m must be >= 0.")
+        if self.static_friction < 0.0 or self.kinetic_friction < 0.0:
+            raise ValueError("Leg friction values must be >= 0.")
+        if self.kinetic_friction > self.static_friction:
+            raise ValueError("Leg kinetic friction must not exceed static friction.")
+        if self.body_contact_samples <= 0:
+            raise ValueError("Leg body_contact_samples must be > 0.")
 
-    def foot_offset_from_mount_m(self) -> tuple[float, float, float]:
-        return (
-            self.length_m * sin(self.angle_rad),
-            0.0,
-            -self.length_m * cos(self.angle_rad),
-        )
+    @property
+    def inertia_about_mount(self) -> float:
+        return self.mass_kg * (self.length_m**2) / 3.0
 
-    def foot_velocity_from_mount_m_s(self) -> tuple[float, float, float]:
-        return (
-            self.length_m * cos(self.angle_rad) * self.angular_velocity_rad_s,
-            0.0,
-            self.length_m * sin(self.angle_rad) * self.angular_velocity_rad_s,
-        )
-
-    def foot_acceleration_from_mount_m_s2(self) -> tuple[float, float, float]:
-        return (
-            (-self.length_m * sin(self.angle_rad) * (self.angular_velocity_rad_s**2))
-            + (self.length_m * cos(self.angle_rad) * self.angular_acceleration_rad_s2),
-            0.0,
-            (self.length_m * cos(self.angle_rad) * (self.angular_velocity_rad_s**2))
-            + (self.length_m * sin(self.angle_rad) * self.angular_acceleration_rad_s2),
-        )
-
-    def com_offset_from_mount_m(self) -> tuple[float, float, float]:
-        half_length = self.length_m / 2.0
-        return (
-            half_length * sin(self.angle_rad),
-            0.0,
-            -half_length * cos(self.angle_rad),
-        )
-
-    def com_acceleration_from_mount_m_s2(self) -> tuple[float, float, float]:
-        """Linear acceleration of the leg's centre of mass relative to its mount point."""
-        half_length = self.length_m / 2.0
-        return (
-            (-half_length * sin(self.angle_rad) * (self.angular_velocity_rad_s**2))
-            + (half_length * cos(self.angle_rad) * self.angular_acceleration_rad_s2),
-            0.0,
-            (half_length * cos(self.angle_rad) * (self.angular_velocity_rad_s**2))
-            + (half_length * sin(self.angle_rad) * self.angular_acceleration_rad_s2),
-        )
+    @property
+    def body_sample_fractions(self) -> tuple[float, ...]:
+        step = 1.0 / float(self.body_contact_samples + 1)
+        return tuple((index + 1) * step for index in range(self.body_contact_samples))

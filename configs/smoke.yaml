@@ -1,0 +1,119 @@
+name: smoke
+
+terrain:
+  kind: stepped_arena
+  field_half_m: 6.0
+  center_half_m: 1.5
+  step_count: 2
+  step_width_m: 1.25
+  step_height_m: 0.08
+  floor_height_m: 0.0
+
+goals:
+  strategy: radial_random
+  radius_m: 3.0
+  height_m: 0.16
+  fixed_goal_xyz: null
+
+spawn_policy:
+  strategy: uniform_box
+  x_range_m: [-0.75, 0.75]
+  y_range_m: [-0.75, 0.75]
+  fixed_points: []
+
+friction:
+  foot_static: 0.9
+  foot_kinetic: 0.65
+  body: 0.35
+
+robot:
+  body_length_m: 0.28
+  body_width_m: 0.12
+  body_height_m: 0.02
+  body_mass_kg: 2.4
+  leg_length_m: 0.16
+  leg_mass_kg: 0.6
+  leg_radius_m: 0.01
+  foot_radius_m: 0.01
+  elastic_deformation_m: 0.002
+  leg_body_samples: 3
+  motor_scale: 6.0
+  max_motor_rad_s: 8.0
+  motor_max_angular_acceleration_rad_s2: 18.0
+  motor_viscous_damping_per_s: 8.0
+  motor_velocity_filter_tau_s: 0.05
+
+physics:
+  gravity_m_s2: 9.81
+  normal_stiffness_n_m: 20000.0
+  normal_damping_n_s_m: 3500.0
+  tangential_stiffness_n_m: 7000.0
+  tangential_damping_n_s_m: 450.0
+  angular_damping_n_m_s: 8.0
+  linear_damping_n_s_m: 80.0
+  airborne_linear_damping_n_s_m: 3.0
+  airborne_angular_damping_n_m_s: 1.0
+  max_contact_force_n: 120.0
+  max_substep_s: 0.00025
+  unloading_stiffness_scale: 0.4
+  sleep_linear_speed_threshold_m_s: 0.01
+  sleep_angular_speed_threshold_rad_s: 0.06
+
+episode:
+  neuron_dt_s: 0.01
+  brain_dt_s: 0.05
+  episode_s: 1.5
+  single_view_episode_s: 6.0
+  default_lifespan_s: 1.5
+  tipped_kill_time_s: 0.5
+  selection_interval_s: 0.5
+  lifespan_bonus_s: 0.5
+  selection_top_frac: 0.25
+  selection_bot_frac: 0.25
+  goal_reached_radius_m: 0.35
+
+reward:
+  default_motor_noise_scale: 0.4
+  max_motor_noise_scale: 1.2
+  fast_progress_tau_s: 0.15
+  slow_progress_tau_s: 0.5
+  dramatic_progress_drop_ratio: 0.55
+  noise_attack_tau_s: 0.1
+  noise_release_tau_s: 0.4
+  side_tip_band_half_width_deg: 60.0
+  side_tip_depth_penalty_scale: 10.0
+  side_tip_escape_delta_scale: 10.0
+  side_tip_exit_bonus: 8.0
+  progress_reward_scale: 50.0
+  goal_reached_bonus: 50.0
+  foot_level_reward_scale: 1.0
+  step_climb_bonus: 30.0
+  escape_bonus: 100.0
+
+training:
+  population_size: 8
+  sigma: 0.08
+  learning_rate: 0.05
+  parent_elite_count: 3
+
+quality_gates:
+  enabled: true
+  run_on_startup: true
+  collision_sanity_steps: 8
+  unstable_state_steps: 24
+  spawn_samples: 8
+  determinism_steps: 16
+  performance_budget_seconds: 4.0
+  performance_warmup_runs: 1
+  performance_eval_runs: 2
+  performance_steps: 16
+  max_body_height_m: 2.5
+  max_abs_body_rotation_rad: 6.5
+  determinism_tolerance: 1.0e-6
+
+logging:
+  level: INFO
+  root_dir: logs
+  console: true
+  events_filename: events.jsonl
+  metrics_filename: metrics.jsonl
