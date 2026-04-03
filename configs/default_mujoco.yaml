@@ -1,40 +1,40 @@
-name: smoke
+name: default_mujoco
 
 simulator:
-  backend: jax
+  backend: mujoco
   render: false
   deterministic_mode: true
   mujoco:
     timestep_s: 0.0025
     integrator: implicitfast
     solver: Newton
-    solver_iterations: 80
-    line_search_iterations: 40
-    noslip_iterations: 4
+    solver_iterations: 100
+    line_search_iterations: 50
+    noslip_iterations: 6
     contact_margin_m: 0.002
     actuator_force_limit: 12.0
     velocity_servo_gain: 6.0
     joint_range_rad: [-1.1, 1.1]
 
 terrain:
-  kind: stepped_arena
-  field_half_m: 6.0
-  center_half_m: 1.5
-  step_count: 2
-  step_width_m: 1.25
-  step_height_m: 0.08
+  kind: flat
+  field_half_m: 15.0
+  center_half_m: 2.5
+  step_count: 5
+  step_width_m: 2.0
+  step_height_m: 0.15
   floor_height_m: 0.0
 
 goals:
   strategy: radial_random
-  radius_m: 3.0
+  radius_m: 10.0
   height_m: 0.16
   fixed_goal_xyz: null
 
 spawn_policy:
   strategy: uniform_box
-  x_range_m: [-0.75, 0.75]
-  y_range_m: [-0.75, 0.75]
+  x_range_m: [-2.0, 2.0]
+  y_range_m: [-2.0, 2.0]
   fixed_points: []
 
 friction:
@@ -78,24 +78,24 @@ physics:
 episode:
   neuron_dt_s: 0.01
   brain_dt_s: 0.05
-  episode_s: 1.5
-  single_view_episode_s: 6.0
-  default_lifespan_s: 1.5
-  tipped_kill_time_s: 0.5
-  selection_interval_s: 0.5
-  lifespan_bonus_s: 0.5
-  selection_top_frac: 0.25
-  selection_bot_frac: 0.25
-  goal_reached_radius_m: 0.35
+  episode_s: 30.0
+  single_view_episode_s: 120.0
+  default_lifespan_s: 30.0
+  tipped_kill_time_s: 5.0
+  selection_interval_s: 15.0
+  lifespan_bonus_s: 20.0
+  selection_top_frac: 0.1
+  selection_bot_frac: 0.1
+  goal_reached_radius_m: 0.5
 
 reward:
   default_motor_noise_scale: 0.4
   max_motor_noise_scale: 1.2
-  fast_progress_tau_s: 0.15
-  slow_progress_tau_s: 0.5
+  fast_progress_tau_s: 0.2
+  slow_progress_tau_s: 0.8
   dramatic_progress_drop_ratio: 0.55
-  noise_attack_tau_s: 0.1
-  noise_release_tau_s: 0.4
+  noise_attack_tau_s: 0.15
+  noise_release_tau_s: 0.9
   side_tip_band_half_width_deg: 60.0
   side_tip_depth_penalty_scale: 10.0
   side_tip_escape_delta_scale: 10.0
@@ -107,23 +107,23 @@ reward:
   escape_bonus: 100.0
 
 training:
-  population_size: 8
+  population_size: 32
   sigma: 0.08
   learning_rate: 0.05
-  parent_elite_count: 3
+  parent_elite_count: 5
 
 quality_gates:
   enabled: true
   run_on_startup: true
-  collision_sanity_steps: 8
-  unstable_state_steps: 24
-  spawn_samples: 8
-  determinism_steps: 16
-  performance_budget_seconds: 4.0
+  collision_sanity_steps: 12
+  unstable_state_steps: 80
+  spawn_samples: 32
+  determinism_steps: 40
+  performance_budget_seconds: 12.0
   performance_warmup_runs: 1
   performance_eval_runs: 2
-  performance_steps: 16
-  max_body_height_m: 2.5
+  performance_steps: 40
+  max_body_height_m: 3.0
   max_abs_body_rotation_rad: 6.5
   determinism_tolerance: 1.0e-6
 

@@ -1,10 +1,11 @@
 # AI Quadruped v2
 
-Config-driven JAX training stack for a quadruped locomotion task. The repo is organized as a very small production-style project: a real domain layer for the robot and environment, packaged runtime code under `ai/`, thin root launchers, declarative configs, structured logs, regression tests, and a working live frontend/backend path.
+Config-driven quadruped training stack with multiple simulation backends. The repo is organized as a small production-style project: a real domain layer for the robot and environment, packaged runtime code under `ai/`, declarative configs, structured logs, regression tests, and a working live frontend/backend path. The default backend is still a fast batched JAX simulator, and MuJoCo is now available as a first-class higher-fidelity backend behind the same rollout-facing contract.
 
 **Repo Layout**
 
 - `quadruped/`: domain models for body, leg, motor, robot, and environment/task representation.
+- `ai/sim/`: simulator abstraction layer plus the JAX and MuJoCo backend implementations.
 - `ai/api/`: FastAPI websocket services for live training and single-checkpoint viewing.
 - `ai/config/`: typed YAML/JSON runtime spec loading and validation.
 - `ai/infra/`: structured run logging and artifact helpers.
@@ -20,22 +21,61 @@ Config-driven JAX training stack for a quadruped locomotion task. The repo is or
 
 **Architecture**
 
-The runtime is split into three layers:
+The runtime is split into four layers:
 
 1. Domain layer: [quadruped/robot.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/robot.py), [quadruped/leg.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/leg.py), [quadruped/motor.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/motor.py), and [quadruped/environment.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/environment.py) define the robot and task in a logical, real-world shape.
-2. Execution layer: [ai/jax_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/jax_trainer.py) converts the resolved spec and domain models into JAX arrays and runs training or rollouts.
-3. Service layer: [ai/api/live.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/api/live.py), [ai/api/single.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/api/single.py), [main.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/main.py), [run_single.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/run_single.py), and the React frontend expose live viewers and headless workflows.
+2. Config layer: [ai/config/schema.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/config/schema.py) resolves YAML/JSON into a typed runtime spec, including the simulator backend choice.
+3. Simulator layer: [ai/sim/jax_backend.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/jax_backend.py) wraps the current batched JAX simulator, and [ai/sim/mujoco_backend.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_backend.py) wraps MuJoCo. [ai/sim/mujoco_model_builder.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_model_builder.py) is the only place that translates domain objects into MuJoCo MJCF.
+4. Training and service layer: [ai/trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/trainer.py) selects the trainer by backend, [ai/jax_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/jax_trainer.py) still owns the fast JAX ES path, [ai/mujoco_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/mujoco_trainer.py) evaluates the same policy network against MuJoCo, and the service layer exposes live viewers and headless workflows.
 
-The important constraint is that the domain layer is real and explicit, but the simulation hot path stays functional for JAX `jit` and batched execution.
+The important constraint is unchanged: the domain/config layers remain the source of truth, and simulation backends adapt to that shared contract instead of leaking simulator-specific details into the frontend or config plumbing.
+
+**Simulation Backends**
+
+The runtime now supports two backends behind a shared rollout-facing interface:
+
+- `jax`: optimized for fast batched training, smoke validation, deterministic regression checks, and the current continuous swarm viewer.
+- `mujoco`: optimized for higher-fidelity rigid-body and contact dynamics, backend-specific quality gates, and realism-focused smoke training or single-policy viewing.
+
+The trainer selection is declarative through config:
+
+```yaml
+simulator:
+  backend: jax   # or mujoco
+  render: false
+  deterministic_mode: true
+  mujoco:
+    timestep_s: 0.0025
+    integrator: implicitfast
+    solver: Newton
+    solver_iterations: 100
+    line_search_iterations: 50
+    noslip_iterations: 4
+    contact_margin_m: 0.002
+    actuator_force_limit: 12.0
+    velocity_servo_gain: 6.0
+    joint_range_rad: [-1.1, 1.1]
+```
+
+The MuJoCo path is built from the existing domain objects. The flow is:
+
+1. `config` -> typed `RuntimeSpec`
+2. `RuntimeSpec` -> `QuadrupedRobot` and `SimulationEnvironment`
+3. domain models -> MuJoCo MJCF in [ai/sim/mujoco_model_builder.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_model_builder.py)
+4. compiled model -> `MuJoCoBackend`
+5. backend -> trainer, quality gates, APIs, and frontend metadata
+
+That means MuJoCo is a backend addition, not a rewrite. The frontend still consumes the same websocket frame shape, and checkpoints remain config-aware.
 
 **Runtime Spec**
 
-The trainer now reads a resolved environment/task spec from YAML or JSON. The default spec lives at [configs/default.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/default.yaml), and a faster validation profile lives at [configs/smoke.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/smoke.yaml).
+The trainer now reads a resolved environment/task spec from YAML or JSON. The default JAX spec lives at [configs/default.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/default.yaml), a faster JAX validation profile lives at [configs/smoke.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/smoke.yaml), and matching MuJoCo profiles live at [configs/default_mujoco.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/default_mujoco.yaml) and [configs/smoke_mujoco.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/smoke_mujoco.yaml).
 
-The JAX simulator remains functional and batch-oriented, but the runtime is now fed through explicit domain objects in [quadruped/robot.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/robot.py), [quadruped/leg.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/leg.py), [quadruped/motor.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/motor.py), and [quadruped/environment.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/environment.py). That keeps the repo logically modeled without putting Python objects into the JAX hot path.
+The JAX simulator remains functional and batch-oriented, but the runtime is now fed through explicit domain objects in [quadruped/robot.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/robot.py), [quadruped/leg.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/leg.py), [quadruped/motor.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/motor.py), and [quadruped/environment.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/environment.py). The MuJoCo backend uses the same source of truth and compiles it into MJCF instead of duplicating dimensions or terrain constants in rollout code.
 
 Supported sections:
 
+- `simulator`: backend selection and MuJoCo-specific solver/control settings.
 - `terrain`: stepped arena or flat terrain, field bounds, step count/width/height, floor height.
 - `goals`: radial random goals or a fixed goal.
 - `spawn_policy`: origin, fixed points, or uniform spawn box.
@@ -73,6 +113,14 @@ python3 train_headless.py --config configs/smoke.yaml --generations 1
 python3 main.py --config configs/smoke.yaml
 ```
 
+Run the equivalent MuJoCo smoke flow:
+
+```bash
+python3 run_quality_gates.py --config configs/smoke_mujoco.yaml
+python3 train_headless.py --config configs/smoke_mujoco.yaml --generations 1
+python3 run_single.py --config configs/smoke_mujoco.yaml
+```
+
 If you only want the live checkpoint viewer instead of continuous training:
 
 ```bash
@@ -94,6 +142,15 @@ The built-in quality suite covers:
 - determinism checks
 - unstable-state detection
 - performance budget checks
+
+When `simulator.backend: mujoco`, the quality runner switches to MuJoCo-specific gates:
+
+- MJCF/model compilation succeeds
+- reset pose is contact-safe
+- zero-action rollout stays numerically stable
+- identical seed reproduces the same rollout
+- JAX and MuJoCo show bounded drift on a fixed smoke rollout
+- MuJoCo rollout time stays inside the configured budget
 
 Fixed-seed regression coverage is enforced in the test suite using the smoke config baseline at [tests/fixtures/smoke_regression_baseline.json](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/tests/fixtures/smoke_regression_baseline.json).
 
@@ -122,15 +179,16 @@ Both launchers start:
 - a FastAPI websocket backend on port `8000`
 - the Vite frontend on port `5173`
 
-They now use the same runtime config pattern as the headless path, so terrain and robot geometry shown in the frontend come from backend metadata instead of duplicated frontend constants.
+They now use the same runtime config pattern as the headless path, so terrain and robot geometry shown in the frontend come from backend metadata instead of duplicated frontend constants. The viewer contract stays simulator-agnostic; the backend adapts itself to the same metadata and swarm frame shape.
 
 **How Config Flows Through The System**
 
 1. A YAML or JSON file is loaded through [ai/config/schema.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/config/schema.py).
 2. That config is converted into domain objects in `quadruped/`.
 3. The JAX trainer applies those values to its runtime constants and cached tensors.
-4. APIs and the frontend viewer receive metadata derived from the same resolved config.
-5. Checkpoints embed the resolved config and are rejected on resume if the active config is incompatible.
+4. The selected simulator backend is constructed from those same resolved objects.
+5. APIs and the frontend viewer receive metadata derived from the same resolved config.
+6. Checkpoints embed the resolved config and simulator backend and are rejected on resume if the active runtime is incompatible.
 
 **Train Headless**
 
@@ -165,7 +223,14 @@ Training checkpoints continue to be written to `checkpoints/`:
 - `best_single.npz`
 - `top_01.npz` through `top_N.npz`
 
-Old checkpoints with incompatible parameter shapes or mismatched configs are rejected during load instead of failing later during rollout.
+Old checkpoints with incompatible parameter shapes, mismatched configs, or the wrong simulator backend are rejected during load instead of failing later during rollout. Automatic resume skips incompatible artifacts and starts fresh; explicit `--resume` still fails loudly so you do not accidentally resume the wrong run.
+
+**MuJoCo Notes**
+
+- The current MuJoCo configs intentionally start with `terrain.kind: flat`. That keeps the first high-fidelity path narrow and stable before expanding stepped-terrain contact tuning further.
+- The MuJoCo backend uses the same policy network and observation layout as the JAX backend, so cross-backend smoke checks stay meaningful.
+- The JAX backend is still the fastest path for batched training and regression baselines.
+- The MuJoCo backend is the better path when you want stricter rigid-body/contact validation or a realism-focused rollout.
 
 **Plot Rewards**
 

@@ -59,7 +59,7 @@ def _single_view_thread(hub: BroadcastHub, config_path: Path, seed: int) -> None
         params = trainer.top_params[0] if trainer.top_params.size else trainer.checkpoint_dict()["params"]
 
         def _emit(step_message: dict) -> None:
-            hub.publish(single_step_to_swarm(step_message, generation=trainer.state.generation))
+            hub.publish(single_step_to_swarm(step_message, generation=trainer.state.generation, spec=spec))
 
         trainer._run_logged_episode(params, goal_xyz, episode_key, _emit, steps=int(trainer.spec.episode.single_view_episode_s / trainer.spec.episode.brain_dt_s))
         time.sleep(0.2)

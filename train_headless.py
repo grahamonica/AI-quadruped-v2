@@ -10,11 +10,10 @@ from pathlib import Path
 
 import numpy as np
 
-import ai.jax_trainer as trainer_module
 from ai.config import DEFAULT_CONFIG_PATH, RuntimeSpec, load_runtime_spec
 from ai.infra import MetricsSink, configure_logging, create_run_artifacts, write_json
 from ai.quality import QualityGateRunner
-from ai.trainer import ESTrainer
+from ai.trainer import ESTrainer, apply_runtime_spec
 
 
 def _parse_args() -> argparse.Namespace:
@@ -90,7 +89,7 @@ def _apply_cli_overrides(spec: RuntimeSpec, args: argparse.Namespace) -> Runtime
 def main() -> int:
     args = _parse_args()
     spec = _apply_cli_overrides(load_runtime_spec(args.config), args)
-    trainer_module.apply_runtime_spec(spec)
+    apply_runtime_spec(spec)
 
     artifacts = create_run_artifacts(spec, run_name=args.run_name)
     logger = configure_logging(spec, artifacts)
@@ -129,15 +128,27 @@ def main() -> int:
         trainer.load_checkpoint(args.resume)
         logger.info("Resumed from checkpoint", extra={"checkpoint_path": str(args.resume)})
     elif latest_path.exists():
-        trainer.load_checkpoint(latest_path)
-        logger.info("Auto-resumed from latest checkpoint", extra={"checkpoint_path": str(latest_path)})
+        try:
+            trainer.load_checkpoint(latest_path)
+            logger.info("Auto-resumed from latest checkpoint", extra={"checkpoint_path": str(latest_path)})
+        except Exception as exc:
+            logger.warning(
+                "Skipped incompatible latest checkpoint",
+                extra={"checkpoint_path": str(latest_path), "reason": str(exc)},
+            )
     elif (args.out_dir / "best.npz").exists():
         fallback_best = args.out_dir / "best.npz"
-        trainer.load_checkpoint(fallback_best)
-        logger.info("Auto-resumed from best checkpoint", extra={"checkpoint_path": str(fallback_best)})
+        try:
+            trainer.load_checkpoint(fallback_best)
+            logger.info("Auto-resumed from best checkpoint", extra={"checkpoint_path": str(fallback_best)})
+        except Exception as exc:
+            logger.warning(
+                "Skipped incompatible best checkpoint",
+                extra={"checkpoint_path": str(fallback_best), "reason": str(exc)},
+            )
 
     best_path = args.out_dir / "best.npz"
-    top_paths = [args.out_dir / f"top_{rank:02d}.npz" for rank in range(1, trainer_module.PARENT_ELITE_COUNT + 1)]
+    top_paths = [args.out_dir / f"top_{rank:02d}.npz" for rank in range(1, spec.training.parent_elite_count + 1)]
     best_single_path = args.out_dir / "best_single.npz"
     interrupted = False
 
@@ -199,8 +210,8 @@ def main() -> int:
         extra={
             "backend": trainer.backend,
             "devices": trainer.device_summary,
-            "population_size": trainer_module.POP_SIZE,
-            "episode_seconds": trainer_module.EPISODE_S,
+            "population_size": spec.training.population_size,
+            "episode_seconds": spec.episode.episode_s,
             "run_dir": str(artifacts.run_dir),
         },
     )

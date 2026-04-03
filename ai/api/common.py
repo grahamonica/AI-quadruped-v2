@@ -8,8 +8,8 @@ from typing import Any
 
 from fastapi import WebSocket
 
-import ai.jax_trainer as trainer_module
 from ai.config import RuntimeSpec
+from ai.sim import single_step_to_swarm as translate_single_step_to_swarm
 from quadruped import QuadrupedRobot, SimulationEnvironment
 
 
@@ -21,6 +21,7 @@ class ViewerMetadata:
     robot: dict[str, Any]
     goal: dict[str, Any]
     training: dict[str, Any]
+    simulator: dict[str, Any]
 
     def to_message(self) -> dict[str, Any]:
         return {
@@ -31,6 +32,7 @@ class ViewerMetadata:
             "robot": self.robot,
             "goal": self.goal,
             "training": self.training,
+            "simulator": self.simulator,
         }
 
 
@@ -102,23 +104,21 @@ def build_viewer_metadata(spec: RuntimeSpec, mode: str) -> ViewerMetadata:
         "episode_s": environment_model.episode.episode_s,
         "selection_interval_s": environment_model.episode.selection_interval_s,
     }
-    return ViewerMetadata(mode=mode, config_name=spec.name, terrain=terrain, robot=robot, goal=goal, training=training)
-
-
-def single_step_to_swarm(step_message: dict[str, Any], generation: int) -> dict[str, Any]:
-    com = step_message["com"]
-    level = int(round(float(trainer_module._step_level_at(trainer_module.jnp.asarray(com[:2], dtype=trainer_module.jnp.float32)))))
-    body_pos = step_message["body"]["pos"]
-    body_rot = step_message["body"]["rot"]
-    leg_angles = [float(leg["angle_rad"]) for leg in step_message["legs"]]
-    return {
-        "type": "swarm",
-        "pos": [float(value) for value in body_pos],
-        "rot": [float(value) for value in body_rot],
-        "leg": leg_angles,
-        "level": [level],
-        "n": 1,
-        "gen": generation,
-        "time_s": float(step_message.get("time_s", 0.0)),
-        "goal": [float(value) for value in step_message.get("goal", [])],
+    simulator = {
+        "backend": spec.simulator.backend,
+        "render": spec.simulator.render,
+        "deterministic_mode": spec.simulator.deterministic_mode,
     }
+    return ViewerMetadata(
+        mode=mode,
+        config_name=spec.name,
+        terrain=terrain,
+        robot=robot,
+        goal=goal,
+        training=training,
+        simulator=simulator,
+    )
+
+
+def single_step_to_swarm(step_message: dict[str, Any], generation: int, spec: RuntimeSpec) -> dict[str, Any]:
+    return translate_single_step_to_swarm(step_message, generation=generation, spec=spec)

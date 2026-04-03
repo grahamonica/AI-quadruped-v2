@@ -23,6 +23,12 @@ def _as_points(value: Any, field_name: str) -> tuple[tuple[float, float], ...]:
     return tuple(points)
 
 
+def _as_float_triple(value: Any, field_name: str) -> tuple[float, float, float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 3:
+        raise ValueError(f"{field_name} must be a 3-item list or tuple.")
+    return float(value[0]), float(value[1]), float(value[2])
+
+
 def _merge_section(default_value: Any, override: Any) -> Any:
     if override is None:
         return default_value
@@ -310,6 +316,57 @@ class TrainingSpec:
 
 
 @dataclass(frozen=True)
+class MujocoSpec:
+    timestep_s: float = 0.0025
+    integrator: str = "implicitfast"
+    solver: str = "Newton"
+    solver_iterations: int = 100
+    line_search_iterations: int = 50
+    noslip_iterations: int = 4
+    contact_margin_m: float = 0.002
+    actuator_force_limit: float = 12.0
+    velocity_servo_gain: float = 6.0
+    joint_range_rad: tuple[float, float] = (-1.1, 1.1)
+
+    def validate(self) -> None:
+        if self.timestep_s <= 0.0:
+            raise ValueError("simulator.mujoco.timestep_s must be > 0.")
+        if self.integrator not in {"Euler", "RK4", "implicit", "implicitfast"}:
+            raise ValueError("simulator.mujoco.integrator must be Euler, RK4, implicit, or implicitfast.")
+        if self.solver not in {"PGS", "CG", "Newton"}:
+            raise ValueError("simulator.mujoco.solver must be PGS, CG, or Newton.")
+        for field_name, value in (
+            ("solver_iterations", self.solver_iterations),
+            ("line_search_iterations", self.line_search_iterations),
+            ("noslip_iterations", self.noslip_iterations),
+        ):
+            if value < 0:
+                raise ValueError(f"simulator.mujoco.{field_name} must be >= 0.")
+        for field_name, value in (
+            ("contact_margin_m", self.contact_margin_m),
+            ("actuator_force_limit", self.actuator_force_limit),
+            ("velocity_servo_gain", self.velocity_servo_gain),
+        ):
+            if value <= 0.0:
+                raise ValueError(f"simulator.mujoco.{field_name} must be > 0.")
+        if self.joint_range_rad[0] >= self.joint_range_rad[1]:
+            raise ValueError("simulator.mujoco.joint_range_rad must be an ordered [min, max] pair.")
+
+
+@dataclass(frozen=True)
+class SimulatorSpec:
+    backend: str = "jax"
+    render: bool = False
+    deterministic_mode: bool = True
+    mujoco: MujocoSpec = field(default_factory=MujocoSpec)
+
+    def validate(self) -> None:
+        if self.backend not in {"jax", "mujoco"}:
+            raise ValueError("simulator.backend must be 'jax' or 'mujoco'.")
+        self.mujoco.validate()
+
+
+@dataclass(frozen=True)
 class QualityGateSpec:
     enabled: bool = True
     run_on_startup: bool = True
@@ -371,6 +428,7 @@ class LoggingSpec:
 @dataclass(frozen=True)
 class RuntimeSpec:
     name: str = "default"
+    simulator: SimulatorSpec = field(default_factory=SimulatorSpec)
     terrain: TerrainSpec = field(default_factory=TerrainSpec)
     goals: GoalSpec = field(default_factory=GoalSpec)
     spawn_policy: SpawnPolicySpec = field(default_factory=SpawnPolicySpec)
@@ -386,6 +444,7 @@ class RuntimeSpec:
     def validate(self) -> None:
         if not self.name:
             raise ValueError("config.name must be non-empty.")
+        self.simulator.validate()
         self.terrain.validate()
         self.goals.validate()
         self.spawn_policy.validate(self.terrain)
@@ -412,6 +471,26 @@ def runtime_spec_from_dict(raw_data: Mapping[str, Any] | None) -> RuntimeSpec:
 
     spec = RuntimeSpec(
         name=str(data["name"]),
+        simulator=SimulatorSpec(
+            backend=str(data["simulator"]["backend"]),
+            render=bool(data["simulator"]["render"]),
+            deterministic_mode=bool(data["simulator"]["deterministic_mode"]),
+            mujoco=MujocoSpec(
+                timestep_s=float(data["simulator"]["mujoco"]["timestep_s"]),
+                integrator=str(data["simulator"]["mujoco"]["integrator"]),
+                solver=str(data["simulator"]["mujoco"]["solver"]),
+                solver_iterations=int(data["simulator"]["mujoco"]["solver_iterations"]),
+                line_search_iterations=int(data["simulator"]["mujoco"]["line_search_iterations"]),
+                noslip_iterations=int(data["simulator"]["mujoco"]["noslip_iterations"]),
+                contact_margin_m=float(data["simulator"]["mujoco"]["contact_margin_m"]),
+                actuator_force_limit=float(data["simulator"]["mujoco"]["actuator_force_limit"]),
+                velocity_servo_gain=float(data["simulator"]["mujoco"]["velocity_servo_gain"]),
+                joint_range_rad=_as_float_pair(
+                    data["simulator"]["mujoco"]["joint_range_rad"],
+                    "simulator.mujoco.joint_range_rad",
+                ),
+            ),
+        ),
         terrain=TerrainSpec(**data["terrain"]),
         goals=GoalSpec(
             strategy=str(data["goals"]["strategy"]),
