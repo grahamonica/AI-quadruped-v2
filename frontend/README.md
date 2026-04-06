@@ -6,8 +6,7 @@ React + Vite viewer for the quadruped websocket streams.
 
 - connects to `ws://localhost:8000/ws`
 - renders arena geometry and robot geometry from backend metadata
-- renders live swarm frames for continuous training
-- renders single-robot frames for checkpoint replay
+- renders single-model replay frames from the viewer service
 - shows generation metrics and reward history
 
 ## Run
@@ -21,7 +20,6 @@ The frontend expects the backend to already be running. In normal use, start bot
 
 ```bash
 python3 main.py
-python3 run_single.py
 ```
 
 ## Notes

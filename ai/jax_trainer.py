@@ -76,7 +76,7 @@ N_ARENA_STEPS = 5
 ARENA_STEP_WIDTH_M = 2.0
 ARENA_STEP_HEIGHT_M = 0.15  # per step (0.15m < LEG_LENGTH_M=0.16m, so step 1 is just reachable)
 
-# Lifespan / swarm selection
+# Lifespan / population selection
 DEFAULT_LIFESPAN_S = 30.0
 TIPPED_KILL_TIME_S = 5.0
 SELECTION_INTERVAL_S = 15.0
@@ -1141,23 +1141,6 @@ def _batch_step(params_batch: jax.Array, carries: EpisodeCarry, goal_xyz: jax.Ar
     return jax.vmap(lambda p, c: _episode_step(_unflatten_params(p), c, goal_xyz))(params_batch, carries)
 
 
-@jax.jit
-def _batch_init_goals(goals_batch: jax.Array, keys: jax.Array, spawn_xys: jax.Array) -> EpisodeCarry:
-    """Initialise a batch of carries with per-bot goals."""
-    return jax.vmap(lambda g, k, xy: _episode_init(g, k, xy))(goals_batch, keys, spawn_xys)
-
-
-@jax.jit
-def _batch_step_goals(params_batch: jax.Array, carries: EpisodeCarry, goals_batch: jax.Array) -> EpisodeCarry:
-    """Advance all carries by one BRAIN_DT step with per-bot goals."""
-    return jax.vmap(lambda p, c, g: _episode_step(_unflatten_params(p), c, g))(params_batch, carries, goals_batch)
-
-
-@jax.jit
-def _single_init(goal_xyz: jax.Array, key: jax.Array, spawn_xy: jax.Array) -> EpisodeCarry:
-    return _episode_init(goal_xyz, key, spawn_xy)
-
-
 def _sample_spawn_batch(key: jax.Array, count: int) -> jax.Array:
     if ACTIVE_SPEC.spawn_policy.strategy == "origin":
         return jnp.zeros((count, 2), dtype=jnp.float32)
@@ -1171,12 +1154,6 @@ def _sample_spawn_batch(key: jax.Array, count: int) -> jax.Array:
     x_values = jax.random.uniform(x_key, (count,), minval=x_min, maxval=x_max, dtype=jnp.float32)
     y_values = jax.random.uniform(y_key, (count,), minval=y_min, maxval=y_max, dtype=jnp.float32)
     return jnp.stack([x_values, y_values], axis=1)
-
-
-def _replace_carry_at(carries: EpisodeCarry, idx: int, new_carry: EpisodeCarry) -> EpisodeCarry:
-    return jax.tree.map(lambda b, s: b.at[idx].set(s), carries, new_carry)
-
-
 def _step_snapshot(carry: EpisodeCarry, goal_xyz: jax.Array, step: int, total_steps: int) -> dict[str, Any]:
     state = carry.env_state
     mount_world, foot_position, _, _, leg_com_world, _ = _compute_leg_kinematics(
@@ -1280,6 +1257,10 @@ class JaxESTrainer:
         return PARAM_COUNT
 
     @property
+    def params(self) -> np.ndarray:
+        return np.asarray(self._params, dtype=np.float32).copy()
+
+    @property
     def top_params(self) -> np.ndarray:
         return self._top_params.copy()
 
@@ -1312,20 +1293,19 @@ class JaxESTrainer:
             on_step(_step_snapshot(carry, goal_xyz, step_i, steps))
         return float(carry.total_reward)
 
-    def _run_swarm_episode(
+    def _run_population_episode(
         self,
         params_batch: jax.Array,
         goal_xyz: jax.Array,
         eval_keys: jax.Array,
         spawn_xys: jax.Array,
-        on_swarm_step: Any = None,
-        emit_every: int = 4,
+        on_step: Any = None,
     ) -> np.ndarray:
-        """Run 1024 bots with lifespan tracking and 15-s selection rounds.
+        """Run the full population with lifespan tracking and periodic selection.
 
-        Top 10% of survivors by step level get +20 s lifespan.
-        Bottom 10% are killed immediately.
-        Bots tipped for >5 s are killed in-carry (reward zeroed by _episode_step).
+        Top performers by step level get lifespan extensions.
+        Bottom performers are killed immediately.
+        Bots tipped for too long are killed in-carry.
         Returns final total_reward per bot.
         """
         N = params_batch.shape[0]
@@ -1338,8 +1318,6 @@ class JaxESTrainer:
         bonus_steps = int(LIFESPAN_BONUS_S / BRAIN_DT)
         n_possible_bonuses = int(DEFAULT_LIFESPAN_S / SELECTION_INTERVAL_S)
         max_total_steps = int(DEFAULT_LIFESPAN_S / BRAIN_DT) + n_possible_bonuses * bonus_steps
-
-        goal_list = np.asarray(goal_xyz, dtype=np.float32).tolist()
 
         for step_i in range(max_total_steps):
             carries = _batch_step(params_batch, carries, goal_xyz)
@@ -1363,163 +1341,21 @@ class JaxESTrainer:
                     lifespan_steps[order[-n_extend:]] += bonus_steps
                     dead_np[order[:n_kill]] = True
 
-            # Emit live swarm snapshot for the frontend
-            if on_swarm_step is not None and step_i % emit_every == 0:
-                body_pos = np.asarray(carries.env_state.body_pos, dtype=np.float32)
-                step_levels_all = np.asarray(carries.max_step_reached, dtype=np.float32)
-                alive_mask = ~dead_np
-                on_swarm_step({
-                    "type": "swarm",
-                    "time_s": round(step_i * BRAIN_DT, 2),
-                    "max_time_s": round(max_total_steps * BRAIN_DT, 1),
-                    "alive_count": int(alive_mask.sum()),
-                    "total_bots": N,
-                    "pos": body_pos[alive_mask].tolist(),
-                    "step_level": step_levels_all[alive_mask].tolist(),
-                    "dead_pos": body_pos[dead_np].tolist(),
-                    "goal": goal_list,
-                })
+            if on_step is not None:
+                on_step(
+                    {
+                        "type": "progress",
+                        "step": step_i,
+                        "total_steps": max_total_steps,
+                        "reward": float(np.asarray(carries.total_reward, dtype=np.float32).mean()),
+                        "time_s": round(step_i * BRAIN_DT, 2),
+                    }
+                )
 
             if dead_np.all():
                 break
 
         return np.asarray(carries.total_reward, dtype=np.float32)
-
-    def run_continuously(
-        self,
-        on_swarm_step: Any = None,
-        on_gen_done: Any = None,
-        emit_every: int = 4,
-    ) -> None:
-        """Run the swarm forever: dead bots are immediately respawned, no sessions.
-
-        ES update triggers every POP_SIZE completed episodes.
-        Each bot gets its own outward random goal so they spread across the arena.
-        Swarm snapshots include full body geometry (pos, rot, leg angles) for
-        wire-frame rendering in the frontend.
-        """
-        N = POP_SIZE
-        LIFESPAN = int(DEFAULT_LIFESPAN_S / BRAIN_DT)
-
-        def _random_outward_goals(key: jax.Array, n: int) -> jax.Array:
-            if self.spec.goals.strategy == "fixed" and self.spec.goals.fixed_goal_xyz is not None:
-                return jnp.tile(jnp.asarray(self.spec.goals.fixed_goal_xyz, dtype=jnp.float32)[None, :], (n, 1))
-            angles = jax.random.uniform(key, (n,), minval=0.0, maxval=2.0 * jnp.pi)
-            gx = float(self.spec.goals.radius_m) * jnp.cos(angles)
-            gy = float(self.spec.goals.radius_m) * jnp.sin(angles)
-            gz = jnp.full((n,), GOAL_HEIGHT_M, dtype=jnp.float32)
-            return jnp.stack([gx, gy, gz], axis=1)
-
-        # ── Initial setup ──────────────────────────────────────────────────
-        self._key, nk, kk, sk, gk = jax.random.split(self._key, 5)
-        noise_np = np.array(
-            jax.random.normal(nk, (N, PARAM_COUNT), dtype=jnp.float32) * jnp.float32(SIGMA),
-            dtype=np.float32,
-        )
-        center_np = np.asarray(self._params, dtype=np.float32)
-        params_jax = jnp.asarray(center_np[None, :] + noise_np)   # (N, PARAM_COUNT)
-        goals_jax = _random_outward_goals(gk, N)                   # (N, 3)
-        eval_keys = jax.random.split(kk, N)
-        spawn_xys = _sample_spawn_batch(sk, N)
-
-        carries = _batch_init_goals(goals_jax, eval_keys, spawn_xys)
-        lifespan_steps = np.full(N, LIFESPAN, dtype=np.int32)
-
-        # ES accumulators
-        completed_noise: list[np.ndarray] = []
-        completed_returns: list[float] = []
-
-        step_i = 0
-        while True:
-            carries = _batch_step_goals(params_jax, carries, goals_jax)
-            lifespan_steps -= 1
-            tip_killed = np.asarray(carries.dead, dtype=bool)
-            just_died = (lifespan_steps <= 0) | tip_killed
-
-            if just_died.any():
-                dead_indices = np.where(just_died)[0]
-                returns_now = np.asarray(carries.total_reward, dtype=np.float32)
-
-                # Accumulate returns for ES
-                for idx in dead_indices:
-                    completed_noise.append(noise_np[idx].copy())
-                    completed_returns.append(float(returns_now[idx]))
-
-                # ES update every POP_SIZE completions
-                if len(completed_returns) >= POP_SIZE:
-                    ret_arr = np.array(completed_returns[-POP_SIZE:], dtype=np.float32)
-                    noi_arr = np.array(completed_noise[-POP_SIZE:], dtype=np.float32)
-                    ret_std = ret_arr.std()
-                    norm_ret = (ret_arr - ret_arr.mean()) / (ret_std if ret_std > 1e-8 else 1.0)
-                    gradient = (norm_ret[:, None] * noi_arr).sum(axis=0) / (POP_SIZE * SIGMA)
-                    self._params = self._params + jnp.float32(LR) * jnp.asarray(gradient)
-                    center_np = np.asarray(self._params, dtype=np.float32)
-
-                    self.state.generation += 1
-                    self.state.mean_reward = float(ret_arr.mean())
-                    self.state.best_reward = max(self.state.best_reward, float(ret_arr.max()))
-                    self.state.rewards_history.append(self.state.mean_reward)
-                    completed_noise = completed_noise[-POP_SIZE:]
-                    completed_returns = completed_returns[-POP_SIZE:]
-
-                    if on_gen_done is not None:
-                        on_gen_done({
-                            "type": "generation",
-                            "generation": self.state.generation,
-                            "mean_reward": self.state.mean_reward,
-                            "best_reward": self.state.best_reward,
-                            "top_rewards": [float(ret_arr.max())],
-                            "rewards_history": self.state.rewards_history[-100:],
-                            "goal": [0.0, 0.0, float(GOAL_HEIGHT_M)],
-                        })
-
-                    # Save checkpoint every generation
-                    try:
-                        from pathlib import Path as _Path
-                        ckpt_dir = _Path(__file__).parent.parent / "checkpoints"
-                        ckpt_dir.mkdir(exist_ok=True)
-                        self.save_checkpoint(ckpt_dir / "latest.npz")
-                        if self.state.generation % 10 == 0:
-                            self.save_checkpoint(ckpt_dir / "best.npz")
-                    except Exception:
-                        pass
-
-                # Respawn dead bots immediately
-                for idx in dead_indices:
-                    self._key, nk2, kk2, sk2, gk2 = jax.random.split(self._key, 5)
-                    new_noise = np.asarray(
-                        jax.random.normal(nk2, (PARAM_COUNT,), dtype=jnp.float32) * jnp.float32(SIGMA),
-                        dtype=np.float32,
-                    )
-                    noise_np[idx] = new_noise
-                    new_params = jnp.asarray(center_np + new_noise)
-                    params_jax = params_jax.at[idx].set(new_params)
-
-                    new_goal = _random_outward_goals(gk2, 1)[0]
-                    goals_jax = goals_jax.at[idx].set(new_goal)
-
-                    new_spawn = _sample_spawn_batch(sk2, 1)[0]
-                    new_carry = _single_init(new_goal, kk2, new_spawn)
-                    carries = _replace_carry_at(carries, idx, new_carry)
-                    lifespan_steps[idx] = LIFESPAN
-
-            # Emit swarm snapshot
-            if on_swarm_step is not None and step_i % emit_every == 0:
-                pos_np = np.asarray(carries.env_state.body_pos, dtype=np.float32)
-                rot_np = np.asarray(carries.env_state.body_rot, dtype=np.float32)
-                leg_np = np.asarray(carries.env_state.leg_angle, dtype=np.float32)
-                lvl_np = np.asarray(carries.max_step_reached, dtype=np.float32)
-                on_swarm_step({
-                    "type": "swarm",
-                    "pos": pos_np.flatten().round(3).tolist(),
-                    "rot": rot_np.flatten().round(3).tolist(),
-                    "leg": leg_np.flatten().round(3).tolist(),
-                    "level": lvl_np.tolist(),
-                    "n": N,
-                    "gen": self.state.generation,
-                })
-
-            step_i += 1
 
     def run_generation(self, on_step: Any = None, on_gen_done: Any = None) -> None:
         goal_xyz = self._random_goal()
@@ -1531,9 +1367,9 @@ class JaxESTrainer:
         eval_keys = jax.random.split(eval_key, POP_SIZE)
         spawn_xys = _sample_spawn_batch(spawn_key, POP_SIZE)
 
-        returns_np = self._run_swarm_episode(
+        returns_np = self._run_population_episode(
             params_batch, goal_xyz, eval_keys, spawn_xys,
-            on_swarm_step=on_step,
+            on_step=on_step,
         )
 
         # Proper OpenAI ES gradient update using the full population.
@@ -1618,6 +1454,7 @@ class JaxESTrainer:
             "backend": np.array(self.backend),
             "config_json": np.array(canonical_config_json(self.spec)),
             "config_name": np.array(self.spec.name),
+            "simulator_backend": np.array(self.spec.simulator.backend),
         }
 
     def save_checkpoint(self, path: str | Path) -> Path:

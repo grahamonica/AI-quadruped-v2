@@ -1,5 +1,15 @@
 """Runtime helpers for launchers and services."""
 
-from .checkpoints import resolve_single_view_checkpoint, resolve_training_resume_checkpoint
+from .checkpoints import (
+    CheckpointCompatibility,
+    checkpoint_matches_spec,
+    resolve_viewer_checkpoint,
+    viewer_checkpoint_candidates,
+)
 
-__all__ = ["resolve_single_view_checkpoint", "resolve_training_resume_checkpoint"]
+__all__ = [
+    "CheckpointCompatibility",
+    "checkpoint_matches_spec",
+    "resolve_viewer_checkpoint",
+    "viewer_checkpoint_candidates",
+]

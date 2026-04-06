@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
+import numpy as np
 from fastapi import WebSocket
 
 from ai.config import RuntimeSpec
-from ai.sim import single_step_to_swarm as translate_single_step_to_swarm
+from ai.runtime import CheckpointCompatibility, checkpoint_matches_spec
 from quadruped import QuadrupedRobot, SimulationEnvironment
+from ai.sim import single_step_to_viewer_frame as translate_single_step_to_viewer_frame
+
+
+VIEWER_RESET_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +109,7 @@ def build_viewer_metadata(spec: RuntimeSpec, mode: str) -> ViewerMetadata:
         "population_size": environment_model.training.population_size,
         "episode_s": environment_model.episode.episode_s,
         "selection_interval_s": environment_model.episode.selection_interval_s,
+        "viewer_reset_s": VIEWER_RESET_SECONDS,
     }
     simulator = {
         "backend": spec.simulator.backend,
@@ -120,5 +127,38 @@ def build_viewer_metadata(spec: RuntimeSpec, mode: str) -> ViewerMetadata:
     )
 
 
-def single_step_to_swarm(step_message: dict[str, Any], generation: int, spec: RuntimeSpec) -> dict[str, Any]:
-    return translate_single_step_to_swarm(step_message, generation=generation, spec=spec)
+def viewer_reset_steps(spec: RuntimeSpec) -> int:
+    return max(1, int(VIEWER_RESET_SECONDS / spec.episode.brain_dt_s))
+
+
+def current_policy_params(trainer: Any) -> np.ndarray:
+    return np.asarray(trainer.params, dtype=np.float32)
+
+
+def load_first_compatible_checkpoint(
+    trainer: Any,
+    spec: RuntimeSpec,
+    candidates: tuple[Path, ...],
+) -> tuple[Path | None, tuple[CheckpointCompatibility, ...]]:
+    skipped: list[CheckpointCompatibility] = []
+    for path in candidates:
+        compatibility = checkpoint_matches_spec(path, spec)
+        if not compatibility.compatible:
+            skipped.append(compatibility)
+            continue
+        try:
+            trainer.load_checkpoint(path)
+            return path, tuple(skipped)
+        except Exception as exc:
+            skipped.append(
+                CheckpointCompatibility(
+                    path=path,
+                    compatible=False,
+                    reason=str(exc),
+                )
+            )
+    return None, tuple(skipped)
+
+
+def single_step_to_frame(step_message: dict[str, Any], generation: int, spec: RuntimeSpec) -> dict[str, Any]:
+    return translate_single_step_to_viewer_frame(step_message, generation=generation, spec=spec)

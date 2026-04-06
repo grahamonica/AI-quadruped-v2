@@ -1,13 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import "./App.css";
 
-const WS_URL = `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:8000/ws`;
+const API_PORT = import.meta.env.VITE_API_PORT || "8000";
+const WS_URL =
+  import.meta.env.VITE_WS_URL ||
+  `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${API_PORT}/ws`;
 
 const DEFAULT_METADATA = {
-  mode: "live",
+  mode: "viewer",
   config_name: "default",
   terrain: {
     kind: "stepped_arena",
+    field_half_m: 6.0,
     center_half_m: 2.5,
     step_count: 5,
     step_width_m: 2.0,
@@ -23,11 +27,15 @@ const DEFAULT_METADATA = {
     population_size: 32,
     episode_s: 30.0,
     selection_interval_s: 15.0,
+    viewer_reset_s: 30.0,
+  },
+  simulator: {
+    backend: "jax",
   },
 };
 
 const STEP_COLORS = ["#203423", "#2f6540", "#699249", "#d6a74b", "#db7440", "#d95066"];
-const BOT_COLORS = ["#7cf2a1", "#8af65d", "#f3df69", "#ff9d51", "#ff6a8a", "#ff7fd0"];
+const MODEL_COLORS = ["#7cf2a1", "#8af65d", "#f3df69", "#ff9d51", "#ff6a8a", "#ff7fd0"];
 
 function rotMat(rot) {
   const [r, p, y] = rot;
@@ -69,7 +77,12 @@ function drawArena(ctx, cam, width, height, terrain) {
   ctx.save();
   if (terrain.kind === "flat") {
     const size = terrain.field_half_m || 6.0;
-    const corners = [[-size, -size], [size, -size], [size, size], [-size, size]];
+    const corners = [
+      [-size, -size],
+      [size, -size],
+      [size, size],
+      [-size, size],
+    ];
     const pts = corners.map(([cx, cy]) => project(cx, cy, terrain.floor_height_m || 0.0, cam, width, height));
     ctx.fillStyle = "#0c1a0f";
     ctx.strokeStyle = "#1f4b2d";
@@ -87,11 +100,17 @@ function drawArena(ctx, cam, width, height, terrain) {
   for (let stepIndex = terrain.step_count; stepIndex >= 0; stepIndex -= 1) {
     const radius = terrain.center_half_m + stepIndex * terrain.step_width_m;
     const z = (terrain.floor_height_m || 0.0) + stepIndex * terrain.step_height_m;
-    const corners = [[-radius, -radius], [radius, -radius], [radius, radius], [-radius, radius]];
+    const corners = [
+      [-radius, -radius],
+      [radius, -radius],
+      [radius, radius],
+      [-radius, radius],
+    ];
     const pts = corners.map(([cx, cy]) => project(cx, cy, z, cam, width, height));
+    const color = STEP_COLORS[Math.min(stepIndex, STEP_COLORS.length - 1)];
 
-    ctx.fillStyle = stepIndex === 0 ? "#102017" : `${STEP_COLORS[Math.min(stepIndex, STEP_COLORS.length - 1)]}26`;
-    ctx.strokeStyle = stepIndex === 0 ? "#285539" : `${STEP_COLORS[Math.min(stepIndex, STEP_COLORS.length - 1)]}88`;
+    ctx.fillStyle = stepIndex === 0 ? "#102017" : `${color}26`;
+    ctx.strokeStyle = stepIndex === 0 ? "#285539" : `${color}88`;
     ctx.lineWidth = stepIndex === 0 ? 1 : 1.4;
     ctx.beginPath();
     ctx.moveTo(pts[0][0], pts[0][1]);
@@ -122,155 +141,100 @@ function drawGoal(ctx, cam, width, height, goal) {
   ctx.restore();
 }
 
-function drawSwarm(ctx, swarm, cam, width, height, robot) {
-  if (!swarm || !swarm.n) return;
+function drawModel(ctx, frame, cam, width, height, robot) {
+  if (!frame || !frame.pos || frame.pos.length < 3 || !frame.rot || frame.rot.length < 3) return;
 
   const bodyHalfLength = robot.body_length_m / 2;
   const bodyHalfWidth = robot.body_width_m / 2;
   const legLength = robot.leg_length_m;
-  const mountsBody = [
-    [bodyHalfLength, bodyHalfWidth, 0],
-    [bodyHalfLength, -bodyHalfWidth, 0],
-    [-bodyHalfLength, bodyHalfWidth, 0],
-    [-bodyHalfLength, -bodyHalfWidth, 0],
-  ];
   const bodyCornersBody = [
     [-bodyHalfLength, -bodyHalfWidth, 0],
     [bodyHalfLength, -bodyHalfWidth, 0],
     [bodyHalfLength, bodyHalfWidth, 0],
     [-bodyHalfLength, bodyHalfWidth, 0],
   ];
+  const mountsBody = [
+    [bodyHalfLength, bodyHalfWidth, 0],
+    [bodyHalfLength, -bodyHalfWidth, 0],
+    [-bodyHalfLength, bodyHalfWidth, 0],
+    [-bodyHalfLength, -bodyHalfWidth, 0],
+  ];
 
-  const bodyPaths = Array.from({ length: BOT_COLORS.length }, () => []);
-  const legPaths = Array.from({ length: BOT_COLORS.length }, () => []);
+  const bodyPos = frame.pos.slice(0, 3);
+  const bodyRot = frame.rot.slice(0, 3);
+  const legAngles = frame.leg || [];
+  const level = Math.min(Math.max(Math.round(frame.level?.[0] || 0), 0), MODEL_COLORS.length - 1);
+  const color = MODEL_COLORS[level];
+  const rotation = rotMat(bodyRot);
 
-  for (let i = 0; i < swarm.n; i += 1) {
-    const bodyIndex = i * 3;
-    const legIndex = i * 4;
-    const bx = swarm.pos[bodyIndex];
-    const by = swarm.pos[bodyIndex + 1];
-    const bz = swarm.pos[bodyIndex + 2];
-    const rx = swarm.rot[bodyIndex];
-    const ry = swarm.rot[bodyIndex + 1];
-    const rz = swarm.rot[bodyIndex + 2];
-    const level = Math.min(Math.round(swarm.level[i] || 0), BOT_COLORS.length - 1);
-    const rotation = rotMat([rx, ry, rz]);
+  const projectedBody = bodyCornersBody.map((corner) => {
+    const world = applyRot(rotation, corner);
+    return project(
+      bodyPos[0] + world[0],
+      bodyPos[1] + world[1],
+      bodyPos[2] + world[2],
+      cam,
+      width,
+      height,
+    );
+  });
 
-    const worldCorners = bodyCornersBody.map((corner) => {
-      const world = applyRot(rotation, corner);
-      return project(bx + world[0], by + world[1], bz + world[2], cam, width, height);
-    });
-    bodyPaths[level].push(worldCorners);
+  ctx.save();
+  ctx.fillStyle = `${color}22`;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(projectedBody[0][0], projectedBody[0][1]);
+  for (let i = 1; i < projectedBody.length; i += 1) ctx.lineTo(projectedBody[i][0], projectedBody[i][1]);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
 
-    const robotLegs = [];
-    for (let legOffset = 0; legOffset < 4; legOffset += 1) {
-      const mountBody = mountsBody[legOffset];
-      const mountWorld = applyRot(rotation, mountBody);
-      const angle = swarm.leg[legIndex + legOffset];
-      const footBody = [legLength * Math.sin(angle), 0, -legLength * Math.cos(angle)];
-      const footWorld = applyRot(rotation, footBody);
-      robotLegs.push([
-        project(bx + mountWorld[0], by + mountWorld[1], bz + mountWorld[2], cam, width, height),
-        project(
-          bx + mountWorld[0] + footWorld[0],
-          by + mountWorld[1] + footWorld[1],
-          bz + mountWorld[2] + footWorld[2],
-          cam,
-          width,
-          height,
-        ),
-      ]);
-    }
-    legPaths[level].push(robotLegs);
+  ctx.strokeStyle = `${color}bb`;
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  for (let i = 0; i < 4; i += 1) {
+    const mountWorld = applyRot(rotation, mountsBody[i]);
+    const angle = legAngles[i] || 0;
+    const footBody = [legLength * Math.sin(angle), 0, -legLength * Math.cos(angle)];
+    const footWorld = applyRot(rotation, footBody);
+    const mountPoint = project(
+      bodyPos[0] + mountWorld[0],
+      bodyPos[1] + mountWorld[1],
+      bodyPos[2] + mountWorld[2],
+      cam,
+      width,
+      height,
+    );
+    const footPoint = project(
+      bodyPos[0] + mountWorld[0] + footWorld[0],
+      bodyPos[1] + mountWorld[1] + footWorld[1],
+      bodyPos[2] + mountWorld[2] + footWorld[2],
+      cam,
+      width,
+      height,
+    );
+    ctx.moveTo(mountPoint[0], mountPoint[1]);
+    ctx.lineTo(footPoint[0], footPoint[1]);
   }
-
-  for (let level = 0; level < BOT_COLORS.length; level += 1) {
-    if (!legPaths[level].length) continue;
-    ctx.strokeStyle = `${BOT_COLORS[level]}88`;
-    ctx.lineWidth = 0.85;
-    ctx.beginPath();
-    for (const segments of legPaths[level]) {
-      for (const [[x1, y1], [x2, y2]] of segments) {
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-      }
-    }
-    ctx.stroke();
-  }
-
-  for (let level = 0; level < BOT_COLORS.length; level += 1) {
-    if (!bodyPaths[level].length) continue;
-    ctx.strokeStyle = BOT_COLORS[level];
-    ctx.lineWidth = level > 0 ? 1.2 : 0.9;
-    ctx.beginPath();
-    for (const corners of bodyPaths[level]) {
-      ctx.moveTo(corners[0][0], corners[0][1]);
-      for (let i = 1; i < corners.length; i += 1) ctx.lineTo(corners[i][0], corners[i][1]);
-      ctx.closePath();
-    }
-    ctx.stroke();
-  }
+  ctx.stroke();
+  ctx.restore();
 }
 
-function RewardChart({ history }) {
-  const ref = useRef(null);
-
-  useEffect(() => {
-    const canvas = ref.current;
-    const data = history.slice(-100);
-    if (!canvas || data.length < 2) return;
-
-    const ctx = canvas.getContext("2d");
-    const width = canvas.width;
-    const height = canvas.height;
-    let min = data[0];
-    let max = data[0];
-    for (let i = 1; i < data.length; i += 1) {
-      min = Math.min(min, data[i]);
-      max = Math.max(max, data[i]);
-    }
-    const range = max - min || 1;
-
-    ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#112219";
-    ctx.fillRect(0, 0, width, height);
-
-    ctx.strokeStyle = "#6df1a6";
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    data.forEach((value, index) => {
-      const px = (index / (data.length - 1)) * width;
-      const py = height - ((value - min) / range) * (height - 8) - 4;
-      if (index === 0) ctx.moveTo(px, py);
-      else ctx.lineTo(px, py);
-    });
-    ctx.stroke();
-  }, [history]);
-
-  return <canvas ref={ref} width={320} height={96} className="reward-chart" />;
-}
-
-function StepLegend({ stepCount }) {
-  return (
-    <div className="legend-card">
-      {BOT_COLORS.map((color, index) => (
-        <span key={color} className="legend-chip">
-          <span className="legend-dot" style={{ color }} />
-          {index === 0 ? "center" : index === stepCount ? "escape" : `step ${index}`}
-        </span>
-      ))}
-    </div>
-  );
+function basename(value) {
+  if (!value) return "uninitialized";
+  const parts = String(value).split("/");
+  return parts[parts.length - 1] || value;
 }
 
 export default function App() {
   const canvasRef = useRef(null);
-  const swarmRef = useRef(null);
   const camRef = useRef(null);
   const animRef = useRef(null);
   const [connected, setConnected] = useState(false);
   const [metadata, setMetadata] = useState(DEFAULT_METADATA);
-  const [generation, setGeneration] = useState(null);
+  const [frame, setFrame] = useState(null);
+  const [status, setStatus] = useState(null);
 
   function getCam(width, height) {
     if (!camRef.current) {
@@ -347,8 +311,8 @@ export default function App() {
       socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
         if (message.type === "metadata") setMetadata((current) => ({ ...current, ...message }));
-        if (message.type === "swarm") swarmRef.current = message;
-        if (message.type === "generation") setGeneration(message);
+        if (message.type === "frame") setFrame(message);
+        if (message.type === "generation") setStatus(message);
       };
     }
 
@@ -378,21 +342,20 @@ export default function App() {
       const cam = getCam(width, height);
       const terrain = metadata.terrain || DEFAULT_METADATA.terrain;
       const robot = metadata.robot || DEFAULT_METADATA.robot;
-      const swarm = swarmRef.current;
-      const goal = swarm?.goal || generation?.goal || metadata?.goal?.fixed_goal_xyz;
+      const goal = frame?.goal || status?.goal || metadata?.goal?.fixed_goal_xyz;
 
       ctx.fillStyle = "#08120d";
       ctx.fillRect(0, 0, width, height);
 
       drawArena(ctx, cam, width, height, terrain);
       drawGoal(ctx, cam, width, height, goal);
-      drawSwarm(ctx, swarm, cam, width, height, robot);
+      drawModel(ctx, frame, cam, width, height, robot);
 
-      if (!swarm) {
+      if (!frame) {
         ctx.fillStyle = "#587760";
         ctx.font = "18px 'IBM Plex Mono', monospace";
         ctx.textAlign = "center";
-        ctx.fillText(connected ? "Waiting for simulation frames..." : `Connecting to ${WS_URL}`, width / 2, height / 2);
+        ctx.fillText(connected ? "Waiting for model frames..." : `Connecting to ${WS_URL}`, width / 2, height / 2);
         ctx.textAlign = "left";
       }
 
@@ -404,10 +367,12 @@ export default function App() {
       cancelled = true;
       cancelAnimationFrame(animRef.current);
     };
-  }, [connected, generation, metadata]);
+  }, [connected, frame, metadata, status]);
 
-  const episodeSeconds = metadata.training?.episode_s ?? DEFAULT_METADATA.training.episode_s;
-  const selectionInterval = metadata.training?.selection_interval_s ?? DEFAULT_METADATA.training.selection_interval_s;
+  const viewerResetSeconds = metadata.training?.viewer_reset_s ?? DEFAULT_METADATA.training.viewer_reset_s;
+  const remainingReset = Math.max(0, viewerResetSeconds - (frame?.time_s ?? 0));
+  const checkpointLoaded = basename(status?.checkpoint_loaded);
+  const simulatorBackend = status?.simulator_backend || metadata.simulator?.backend || "jax";
 
   return (
     <div className="app-shell">
@@ -415,31 +380,28 @@ export default function App() {
 
       <aside className="hud-card hud-card--primary">
         <div className="hud-kicker">
-          {metadata.mode === "single" ? "Checkpoint Replay" : "Live Training"}
+          Current Model Replay
           <span className={`status-pill ${connected ? "status-pill--live" : "status-pill--offline"}`}>
-            {connected ? "live" : "offline"}
+            {connected ? "connected" : "offline"}
           </span>
         </div>
-        <h1 className="hud-title">Quadruped Arena</h1>
+        <h1 className="hud-title">Quadruped Viewer</h1>
         <p className="hud-subtitle">
-          config <strong>{metadata.config_name}</strong>
+          config <strong>{metadata.config_name}</strong> on <strong>{simulatorBackend}</strong>
         </p>
 
-        {generation ? (
-          <div className="metrics-grid">
-            <div><span>generation</span><strong>{generation.generation}</strong></div>
-            <div><span>mean reward</span><strong>{generation.mean_reward?.toFixed(2) ?? "0.00"}</strong></div>
-            <div><span>best reward</span><strong>{generation.best_reward?.toFixed(2) ?? "0.00"}</strong></div>
-            <div><span>top reward</span><strong>{generation.top_rewards?.[0]?.toFixed(2) ?? "n/a"}</strong></div>
-          </div>
-        ) : (
-          <div className="hud-empty">No metrics yet.</div>
-        )}
-
-        <div className="chart-block">
-          <div className="chart-label">mean reward / generation</div>
-          <RewardChart history={generation?.rewards_history || []} />
+        <div className="metrics-grid">
+          <div><span>checkpoint</span><strong>{checkpointLoaded}</strong></div>
+          <div><span>reset in</span><strong>{remainingReset.toFixed(1)}s</strong></div>
+          <div><span>generation</span><strong>{status?.generation ?? 0}</strong></div>
+          <div><span>mean reward</span><strong>{status?.mean_reward?.toFixed(2) ?? "0.00"}</strong></div>
+          <div><span>best reward</span><strong>{status?.best_reward?.toFixed(2) ?? "0.00"}</strong></div>
+          <div><span>frame time</span><strong>{frame?.time_s?.toFixed(1) ?? "0.0"}s</strong></div>
         </div>
+
+        <p className="hud-note">
+          This viewer replays the current model only. It does not train or mutate weights, and it resets every {viewerResetSeconds.toFixed(0)} seconds.
+        </p>
       </aside>
 
       <aside className="hud-card hud-card--secondary">
@@ -449,14 +411,12 @@ export default function App() {
           <div><span>step width</span><strong>{metadata.terrain.step_width_m}m</strong></div>
           <div><span>step height</span><strong>{metadata.terrain.step_height_m}m</strong></div>
           <div><span>population</span><strong>{metadata.training.population_size}</strong></div>
-          <div><span>episode</span><strong>{episodeSeconds}s</strong></div>
-          <div><span>selection</span><strong>{selectionInterval}s</strong></div>
-          <div><span>viewer</span><strong>{metadata.mode}</strong></div>
+          <div><span>episode</span><strong>{metadata.training.episode_s}s</strong></div>
+          <div><span>backend</span><strong>{simulatorBackend}</strong></div>
+          <div><span>mode</span><strong>{metadata.mode}</strong></div>
         </div>
-        <p className="hud-note">Drag to orbit. Scroll to zoom. Goal marker updates from the active server stream.</p>
+        <p className="hud-note">Drag to orbit. Scroll to zoom. The goal marker and reset timer come from the active replay stream.</p>
       </aside>
-
-      <StepLegend stepCount={metadata.terrain.step_count || DEFAULT_METADATA.terrain.step_count} />
     </div>
   );
 }

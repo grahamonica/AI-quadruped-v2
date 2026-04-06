@@ -12,7 +12,6 @@ import numpy as np
 import ai.jax_trainer as trainer_module
 from ai.config import RuntimeSpec, canonical_config_json
 from ai.sim.mujoco_backend import MuJoCoBackend
-from ai.sim.translators import single_step_to_swarm
 
 
 class MuJoCoESTrainer:
@@ -46,6 +45,10 @@ class MuJoCoESTrainer:
     @property
     def param_count(self) -> int:
         return trainer_module.PARAM_COUNT
+
+    @property
+    def params(self) -> np.ndarray:
+        return np.asarray(self._params, dtype=np.float32).copy()
 
     @property
     def top_params(self) -> np.ndarray:
@@ -82,16 +85,31 @@ class MuJoCoESTrainer:
         spawn_xys: jax.Array,
         on_step: Any = None,
     ) -> np.ndarray:
-        returns = np.zeros((params_batch.shape[0],), dtype=np.float32)
-        for index in range(params_batch.shape[0]):
-            callback = on_step if on_step is not None and index == 0 else (lambda _message: None)
-            returns[index] = self._backend.run_logged_episode(
-                params_batch[index],
+        if on_step is None or params_batch.shape[0] == 0:
+            return self._backend.run_population(
+                params_batch,
                 goal_xyz,
-                eval_keys[index],
-                callback,
+                eval_keys,
                 int(trainer_module.EPISODE_S / trainer_module.BRAIN_DT),
-                spawn_xy=spawn_xys[index],
+                spawn_xys=spawn_xys,
+            )
+
+        returns = np.zeros((params_batch.shape[0],), dtype=np.float32)
+        returns[0] = self._backend.run_logged_episode(
+            params_batch[0],
+            goal_xyz,
+            eval_keys[0],
+            on_step,
+            int(trainer_module.EPISODE_S / trainer_module.BRAIN_DT),
+            spawn_xy=spawn_xys[0],
+        )
+        if params_batch.shape[0] > 1:
+            returns[1:] = self._backend.run_population(
+                params_batch[1:],
+                goal_xyz,
+                eval_keys[1:],
+                int(trainer_module.EPISODE_S / trainer_module.BRAIN_DT),
+                spawn_xys=spawn_xys[1:],
             )
         return returns
 
@@ -195,32 +213,6 @@ class MuJoCoESTrainer:
                     "rewards_history": self.state.rewards_history[-100:],
                     "goal": list(self.state.goal_xyz),
                 }
-            )
-
-    def run_continuously(
-        self,
-        on_swarm_step: Any = None,
-        on_gen_done: Any = None,
-        emit_every: int = 4,
-    ) -> None:
-        while True:
-            self.run_generation(on_gen_done=on_gen_done)
-            if on_swarm_step is None or self._top_params.size == 0:
-                continue
-            self._key, episode_key = jax.random.split(self._key)
-            goal_xyz = self._random_goal()
-
-            def _emit(step_message: dict[str, Any]) -> None:
-                step_index = int(step_message.get("step", 0))
-                if emit_every <= 1 or step_index % emit_every == 0:
-                    on_swarm_step(single_step_to_swarm(step_message, generation=self.state.generation, spec=self.spec))
-
-            self._backend.run_logged_episode(
-                self._top_params[0],
-                goal_xyz,
-                episode_key,
-                _emit,
-                int(self.spec.episode.single_view_episode_s / self.spec.episode.brain_dt_s),
             )
 
     def checkpoint_dict(self) -> dict[str, Any]:

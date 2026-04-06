@@ -1,4 +1,4 @@
-"""Start the live training API and frontend together."""
+"""Start the unified viewer API and frontend together."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ VENV_PY = PROJECT / "venv" / "bin" / "python"
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start the live training API and frontend.")
+    parser = argparse.ArgumentParser(description="Start the quadruped viewer API and frontend.")
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Runtime config for the API process.")
     parser.add_argument("--seed", type=int, default=42, help="Trainer seed for the API process.")
     parser.add_argument("--api-port", type=int, default=8000, help="Port for the FastAPI websocket service.")
@@ -49,7 +49,7 @@ _PY = _resolve_python()
 
 def _ensure_runtime_files() -> None:
     missing: list[str] = []
-    for relative_path in ("server.py", "frontend/package.json", "frontend/index.html"):
+    for relative_path in ("ai/api/live.py", "frontend/package.json", "frontend/index.html"):
         if not (PROJECT / relative_path).exists():
             missing.append(relative_path)
     if missing:
@@ -94,16 +94,19 @@ def _start_server(api_port: int, config: Path, seed: int) -> subprocess.Popen:
     env["QUADRUPED_CONFIG"] = str(config.resolve())
     env["QUADRUPED_SEED"] = str(seed)
     return subprocess.Popen(
-        [_PY, "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", str(api_port), "--log-level", "warning"],
+        [_PY, "-m", "uvicorn", "ai.api.live:app", "--host", "0.0.0.0", "--port", str(api_port), "--log-level", "warning"],
         cwd=PROJECT,
         env=env,
     )
 
 
-def _start_frontend(frontend_port: int) -> subprocess.Popen:
+def _start_frontend(frontend_port: int, api_port: int) -> subprocess.Popen:
+    env = os.environ.copy()
+    env["VITE_API_PORT"] = str(api_port)
     return subprocess.Popen(
         ["npm", "run", "dev", "--", "--port", str(frontend_port)],
         cwd=FRONTEND,
+        env=env,
     )
 
 
@@ -144,13 +147,13 @@ def main() -> None:
     processes.append(server)
     time.sleep(1)
 
-    frontend = _start_frontend(args.frontend_port)
+    frontend = _start_frontend(args.frontend_port, args.api_port)
     processes.append(frontend)
     _save_pids(server.pid, frontend.pid)
 
     print(f"Python          : {_PY}")
     print(f"Config          : {args.config.resolve()}")
-    print(f"Training server : http://localhost:{args.api_port}")
+    print(f"Viewer API      : http://localhost:{args.api_port}")
     print(f"Frontend        : http://localhost:{args.frontend_port}")
     print("Press Ctrl-C to stop.\n")
 

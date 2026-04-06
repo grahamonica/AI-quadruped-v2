@@ -6,14 +6,14 @@ Config-driven quadruped training stack with multiple simulation backends. The re
 
 - `quadruped/`: domain models for body, leg, motor, robot, and environment/task representation.
 - `ai/sim/`: simulator abstraction layer plus the JAX and MuJoCo backend implementations.
-- `ai/api/`: FastAPI websocket services for live training and single-checkpoint viewing.
+- `ai/api/`: FastAPI websocket service for the frontend viewer.
 - `ai/config/`: typed YAML/JSON runtime spec loading and validation.
 - `ai/infra/`: structured run logging and artifact helpers.
 - `ai/quality/`: quality gates and fixed-seed regression tooling.
 - `ai/runtime/`: checkpoint and launcher runtime helpers.
 - `ai/`: JAX trainer implementation and compatibility exports.
 - `configs/`: declarative runtime specs in YAML.
-- `frontend/`: React + Vite viewer that consumes websocket metadata and swarm frames.
+- `frontend/`: React + Vite viewer that consumes websocket metadata and single-model replay frames.
 - `tests/`: config validation, smoke quality checks, and fixed-seed regression tests.
 - `checkpoints/`: saved model artifacts.
 - `logs/`: per-run structured artifacts and metrics. This directory is gitignored.
@@ -26,7 +26,7 @@ The runtime is split into four layers:
 1. Domain layer: [quadruped/robot.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/robot.py), [quadruped/leg.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/leg.py), [quadruped/motor.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/motor.py), and [quadruped/environment.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/environment.py) define the robot and task in a logical, real-world shape.
 2. Config layer: [ai/config/schema.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/config/schema.py) resolves YAML/JSON into a typed runtime spec, including the simulator backend choice.
 3. Simulator layer: [ai/sim/jax_backend.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/jax_backend.py) wraps the current batched JAX simulator, and [ai/sim/mujoco_backend.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_backend.py) wraps MuJoCo. [ai/sim/mujoco_model_builder.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_model_builder.py) is the only place that translates domain objects into MuJoCo MJCF.
-4. Training and service layer: [ai/trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/trainer.py) selects the trainer by backend, [ai/jax_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/jax_trainer.py) still owns the fast JAX ES path, [ai/mujoco_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/mujoco_trainer.py) evaluates the same policy network against MuJoCo, and the service layer exposes live viewers and headless workflows.
+4. Training and service layer: [ai/trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/trainer.py) selects the trainer by backend, [ai/jax_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/jax_trainer.py) still owns the fast JAX ES path, [ai/mujoco_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/mujoco_trainer.py) evaluates the same policy network against MuJoCo, and the service layer exposes the viewer and headless workflows.
 
 The important constraint is unchanged: the domain/config layers remain the source of truth, and simulation backends adapt to that shared contract instead of leaking simulator-specific details into the frontend or config plumbing.
 
@@ -34,8 +34,8 @@ The important constraint is unchanged: the domain/config layers remain the sourc
 
 The runtime now supports two backends behind a shared rollout-facing interface:
 
-- `jax`: optimized for fast batched training, smoke validation, deterministic regression checks, and the current continuous swarm viewer.
-- `mujoco`: optimized for higher-fidelity rigid-body and contact dynamics, backend-specific quality gates, and realism-focused smoke training or single-policy viewing.
+- `jax`: optimized for fast batched training, smoke validation, and deterministic regression checks.
+- `mujoco`: optimized for higher-fidelity rigid-body and contact dynamics, backend-specific quality gates, and realism-focused smoke training or replay.
 
 The trainer selection is declarative through config:
 
@@ -118,13 +118,13 @@ Run the equivalent MuJoCo smoke flow:
 ```bash
 python3 run_quality_gates.py --config configs/smoke_mujoco.yaml
 python3 train_headless.py --config configs/smoke_mujoco.yaml --generations 1
-python3 run_single.py --config configs/smoke_mujoco.yaml
+python3 main.py --config configs/smoke_mujoco.yaml
 ```
 
-If you only want the live checkpoint viewer instead of continuous training:
+If you only want the viewer for the current model:
 
 ```bash
-python3 run_single.py --config configs/smoke.yaml
+python3 main.py --config configs/smoke.yaml
 ```
 
 **Run Quality Gates**
@@ -160,26 +160,20 @@ Run the repo tests locally:
 python3 -m unittest discover -s tests -v
 ```
 
-**Run Live UI**
+**Run Viewer**
 
-Live training viewer:
+Unified viewer:
 
 ```bash
 python3 main.py --config configs/default.yaml
 ```
 
-Single-checkpoint viewer:
-
-```bash
-python3 run_single.py --config configs/default.yaml
-```
-
-Both launchers start:
+This launcher starts:
 
 - a FastAPI websocket backend on port `8000`
 - the Vite frontend on port `5173`
 
-They now use the same runtime config pattern as the headless path, so terrain and robot geometry shown in the frontend come from backend metadata instead of duplicated frontend constants. The viewer contract stays simulator-agnostic; the backend adapts itself to the same metadata and swarm frame shape.
+It uses the same runtime config pattern as the headless path, so terrain and robot geometry shown in the frontend come from backend metadata instead of duplicated frontend constants. The viewer contract stays simulator-agnostic; the backend adapts itself to the same metadata and single-model frame shape.
 
 **How Config Flows Through The System**
 
@@ -220,8 +214,6 @@ Training checkpoints continue to be written to `checkpoints/`:
 
 - `latest.npz`
 - `best.npz`
-- `best_single.npz`
-- `top_01.npz` through `top_N.npz`
 
 Old checkpoints with incompatible parameter shapes, mismatched configs, or the wrong simulator backend are rejected during load instead of failing later during rollout. Automatic resume skips incompatible artifacts and starts fresh; explicit `--resume` still fails loudly so you do not accidentally resume the wrong run.
 
@@ -241,5 +233,4 @@ python3 plot_rewards.py --checkpoint checkpoints/latest.npz
 **Notes**
 
 - `train_headless.py --save-every` is retained only for CLI compatibility. Numbered generation checkpoints are not written.
-- The live viewer entrypoints depend on [server.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/server.py), [server_single.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/server_single.py), and [frontend/index.html](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/frontend/index.html), which are present again in this repo.
 - The launchers prefer the current Python interpreter first. That avoids silently using a stale repo-local venv when it differs from the environment you are actively running.

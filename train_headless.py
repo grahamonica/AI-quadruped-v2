@@ -8,8 +8,6 @@ import time
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
-
 from ai.config import DEFAULT_CONFIG_PATH, RuntimeSpec, load_runtime_spec
 from ai.infra import MetricsSink, configure_logging, create_run_artifacts, write_json
 from ai.quality import QualityGateRunner
@@ -148,8 +146,6 @@ def main() -> int:
             )
 
     best_path = args.out_dir / "best.npz"
-    top_paths = [args.out_dir / f"top_{rank:02d}.npz" for rank in range(1, spec.training.parent_elite_count + 1)]
-    best_single_path = args.out_dir / "best_single.npz"
     interrupted = False
 
     def _save_checkpoint(path: Path, label: str) -> Path:
@@ -163,40 +159,6 @@ def main() -> int:
             },
         )
         return saved_path
-
-    def _save_payload(path: Path, label: str, payload: dict) -> Path:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, **payload)
-        logger.info(
-            "Checkpoint updated",
-            extra={
-                "label": label,
-                "generation": trainer.state.generation,
-                "checkpoint_path": str(path),
-            },
-        )
-        return path
-
-    def _candidate_payload(rank_index: int) -> dict:
-        payload = trainer.checkpoint_dict()
-        top_params = trainer.top_params
-        top_rewards = trainer.top_rewards
-        top_indices = trainer.top_indices
-        top_generations = trainer.top_generations
-        payload["params"] = top_params[rank_index].astype(np.float32)
-        payload["candidate_reward"] = np.float32(top_rewards[rank_index])
-        payload["candidate_rank"] = np.int32(rank_index + 1)
-        payload["candidate_source_index"] = np.int32(top_indices[rank_index])
-        payload["candidate_source_generation"] = np.int32(top_generations[rank_index])
-        return payload
-
-    def _save_top_ranked() -> None:
-        top_rewards = trainer.top_rewards
-        for rank_index, path in enumerate(top_paths):
-            if rank_index < top_rewards.shape[0]:
-                _save_payload(path, f"top_{rank_index + 1:02d}", _candidate_payload(rank_index))
-            else:
-                path.unlink(missing_ok=True)
 
     def _handle_interrupt(_sig, _frame) -> None:
         nonlocal interrupted
@@ -215,9 +177,7 @@ def main() -> int:
             "run_dir": str(artifacts.run_dir),
         },
     )
-
     previous_best = trainer.state.best_reward
-    previous_best_single = trainer.state.best_single_reward
 
     for _ in range(args.generations):
         if interrupted:
@@ -233,7 +193,7 @@ def main() -> int:
             total_steps = int(msg.get("total_steps", 0))
             if step == 0 or step % args.progress_every_steps == 0 or step >= max(total_steps - 1, 0):
                 logger.info(
-                    "Swarm progress",
+                    "Population progress",
                     extra={
                         "generation": target_generation,
                         "step": step,
@@ -247,14 +207,10 @@ def main() -> int:
         elapsed_s = time.perf_counter() - generation_start_s
 
         _save_checkpoint(latest_path, "latest")
-        _save_top_ranked()
 
         if trainer.state.best_reward > previous_best:
             _save_checkpoint(best_path, "best")
             previous_best = trainer.state.best_reward
-        if trainer.state.best_single_reward > previous_best_single and trainer.top_rewards.shape[0] > 0:
-            _save_payload(best_single_path, "best_single", _candidate_payload(0))
-            previous_best_single = trainer.state.best_single_reward
 
         metrics.emit(
             "generation",
@@ -286,7 +242,6 @@ def main() -> int:
         "elapsed_s": total_elapsed_s,
         "latest_checkpoint": str(latest_path),
         "best_checkpoint": str(best_path),
-        "best_single_checkpoint": str(best_single_path),
         "quality_report_path": str(artifacts.quality_report_path) if quality_report is not None else None,
     }
     write_json(artifacts.run_dir / "summary.json", summary)

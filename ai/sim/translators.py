@@ -34,21 +34,22 @@ def step_level_at(spec: RuntimeSpec, xy: tuple[float, float] | list[float]) -> i
     return int(min(max(int(raw_step + 1e-6), 0), terrain.step_count))
 
 
-def single_step_to_swarm(step_message: dict[str, Any], generation: int, spec: RuntimeSpec) -> dict[str, Any]:
+def single_step_to_viewer_frame(step_message: dict[str, Any], generation: int, spec: RuntimeSpec) -> dict[str, Any]:
     com = step_message["com"]
     body_pos = step_message["body"]["pos"]
     body_rot = step_message["body"]["rot"]
     leg_angles = [float(leg["angle_rad"]) for leg in step_message["legs"]]
     level = int(step_message.get("level", step_level_at(spec, com[:2])))
     return {
-        "type": "swarm",
+        "type": "frame",
         "pos": [float(value) for value in body_pos],
         "rot": [float(value) for value in body_rot],
         "leg": leg_angles,
         "level": [level],
         "n": 1,
         "gen": generation,
+        "step": int(step_message.get("step", 0)),
+        "total_steps": int(step_message.get("total_steps", 0)),
         "time_s": float(step_message.get("time_s", 0.0)),
         "goal": [float(value) for value in step_message.get("goal", [])],
     }
-

@@ -4,20 +4,28 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from ai.runtime import resolve_single_view_checkpoint, resolve_training_resume_checkpoint
-from server import app as live_app
-from server_single import app as single_app
+import numpy as np
+
+from ai.config import canonical_config_json, load_runtime_spec
+from ai.api.live import app as viewer_app
+from ai.runtime import resolve_viewer_checkpoint
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _write_checkpoint(path: Path, config_path: Path) -> None:
+    spec = load_runtime_spec(config_path)
+    np.savez_compressed(
+        path,
+        config_json=np.array(canonical_config_json(spec)),
+        simulator_backend=np.array(spec.simulator.backend),
+    )
 
 
 class ServiceImportTests(unittest.TestCase):
-    def test_live_app_routes_exist(self) -> None:
-        paths = {route.path for route in live_app.routes}
-        self.assertIn("/", paths)
-        self.assertIn("/healthz", paths)
-        self.assertIn("/ws", paths)
-
-    def test_single_app_routes_exist(self) -> None:
-        paths = {route.path for route in single_app.routes}
+    def test_viewer_app_routes_exist(self) -> None:
+        paths = {route.path for route in viewer_app.routes}
         self.assertIn("/", paths)
         self.assertIn("/healthz", paths)
         self.assertIn("/ws", paths)
@@ -27,10 +35,17 @@ class ServiceImportTests(unittest.TestCase):
             root = Path(tmp_dir)
             (root / "best.npz").write_text("best", encoding="utf-8")
             (root / "latest.npz").write_text("latest", encoding="utf-8")
-            (root / "best_single.npz").write_text("single", encoding="utf-8")
 
-            self.assertEqual(resolve_training_resume_checkpoint(root), root / "latest.npz")
-            self.assertEqual(resolve_single_view_checkpoint(root), root / "best_single.npz")
+            self.assertEqual(resolve_viewer_checkpoint(root), root / "latest.npz")
+
+    def test_checkpoint_resolution_skips_incompatible_candidates(self) -> None:
+        jax_spec = load_runtime_spec(PROJECT_ROOT / "configs" / "smoke.yaml")
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            _write_checkpoint(root / "latest.npz", PROJECT_ROOT / "configs" / "smoke_mujoco.yaml")
+            _write_checkpoint(root / "best.npz", PROJECT_ROOT / "configs" / "smoke.yaml")
+
+            self.assertEqual(resolve_viewer_checkpoint(root, spec=jax_spec), root / "best.npz")
 
 
 if __name__ == "__main__":

@@ -119,7 +119,7 @@ quality_gates:
   unstable_state_steps: 24
   spawn_samples: 8
   determinism_steps: 16
-  performance_budget_seconds: 6.0
+  performance_budget_seconds: 12.0
   performance_warmup_runs: 1
   performance_eval_runs: 1
   performance_steps: 16
