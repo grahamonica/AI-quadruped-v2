@@ -21,7 +21,11 @@ frontend/dist/
 # OS
 .DS_Store
 
+# Local IDE
+.claude/settings.local.json
+
 # Runtime state
 .server_pids
 .single_pids
 logs/
+tracker.md

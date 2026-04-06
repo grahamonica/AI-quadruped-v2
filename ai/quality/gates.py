@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import platform
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -509,6 +510,28 @@ def write_regression_baseline(path: str | Path, metrics: dict[str, Any]) -> Path
     return target
 
 
+def _select_regression_baseline_variant(baseline: dict[str, Any]) -> dict[str, Any]:
+    variants = baseline.get("variants")
+    if not isinstance(variants, dict):
+        return baseline
+
+    system_key = platform.system().lower()
+    machine_key = platform.machine().lower()
+    candidate_keys = (
+        f"{system_key}-{machine_key}",
+        system_key,
+        "default",
+    )
+    for key in candidate_keys:
+        value = variants.get(key)
+        if isinstance(value, dict):
+            return value
+    raise ValueError(
+        "Regression baseline file defines platform variants but none matched the current platform. "
+        f"Tried: {', '.join(candidate_keys)}"
+    )
+
+
 def compare_regression_to_baseline(
     spec: RuntimeSpec,
     baseline_path: str | Path,
@@ -516,7 +539,8 @@ def compare_regression_to_baseline(
     generations: int = 1,
     atol: float = 1e-5,
 ) -> QualityReport:
-    baseline = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    baseline_raw = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
+    baseline = _select_regression_baseline_variant(baseline_raw)
     current = collect_regression_metrics(spec, seeds=seeds, generations=generations)
     results: list[GateResult] = []
     for seed in seeds:
