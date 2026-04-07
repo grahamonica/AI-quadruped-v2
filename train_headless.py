@@ -11,7 +11,7 @@ from pathlib import Path
 from ai.config import DEFAULT_CONFIG_PATH, RuntimeSpec, load_runtime_spec
 from ai.infra import MetricsSink, configure_logging, create_run_artifacts, write_json
 from ai.quality import QualityGateRunner
-from ai.trainer import ESTrainer, apply_runtime_spec
+from ai.jax_trainer import ESTrainer, apply_runtime_spec
 
 
 def _parse_args() -> argparse.Namespace:

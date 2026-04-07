@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from ai.config import load_runtime_spec
-from ai.trainer import apply_runtime_spec, current_environment_model, current_robot_model
+from ai.jax_trainer import apply_runtime_spec, current_environment_model, current_robot_model
 from quadruped import QuadrupedRobot, SimulationEnvironment
 
 

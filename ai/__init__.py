@@ -1,4 +1,4 @@
-from .trainer import (
+from .jax_trainer import (
     ESTrainer,
     JaxESTrainer,
     TrainingState,

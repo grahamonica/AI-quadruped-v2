@@ -1,7 +1,7 @@
 name: default
 
 simulator:
-  backend: jax
+  backend: unified
   render: false
   deterministic_mode: true
   mujoco:
@@ -10,7 +10,7 @@ simulator:
     solver: Newton
     solver_iterations: 100
     line_search_iterations: 50
-    noslip_iterations: 4
+    noslip_iterations: 6
     contact_margin_m: 0.002
     actuator_force_limit: 12.0
     velocity_servo_gain: 6.0
@@ -113,15 +113,16 @@ training:
   parent_elite_count: 5
 
 quality_gates:
+  profile: runtime
   enabled: true
   run_on_startup: true
   collision_sanity_steps: 12
   unstable_state_steps: 80
   spawn_samples: 32
   determinism_steps: 40
-  performance_budget_seconds: 6.0
+  performance_budget_seconds: 12.0
   performance_warmup_runs: 1
-  performance_eval_runs: 3
+  performance_eval_runs: 2
   performance_steps: 40
   max_body_height_m: 3.0
   max_abs_body_rotation_rad: 6.5

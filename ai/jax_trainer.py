@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import mujoco
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -11,7 +12,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from ai.config import RuntimeSpec, canonical_config_json, default_runtime_spec
+from ai.config import RuntimeSpec, canonical_config_json, config_json_matches_checkpoint, default_runtime_spec
+from ai.sim.mujoco_backend import MuJoCoBackend
 from quadruped import LEG_ROTATION_AXIS_BODY, QuadrupedRobot, SimulationEnvironment
 
 
@@ -1224,8 +1226,8 @@ def _step_snapshot(carry: EpisodeCarry, goal_xyz: jax.Array, step: int, total_st
     }
 
 
-class JaxESTrainer:
-    """Headless ES trainer running the network and simulator on a JAX backend."""
+class ESTrainer:
+    """Single ES trainer that keeps optimization in JAX and swaps only the rollout backend."""
 
     def __init__(self, seed: int = 42, spec: RuntimeSpec | None = None) -> None:
         self.spec = apply_runtime_spec(spec or current_runtime_spec())
@@ -1243,14 +1245,15 @@ class JaxESTrainer:
         self._top_rewards = np.zeros((0,), dtype=np.float32)
         self._top_indices = np.zeros((0,), dtype=np.int32)
         self._top_generations = np.zeros((0,), dtype=np.int32)
+        self._rollout_backend = MuJoCoBackend(self.spec)
 
     @property
     def backend(self) -> str:
-        return jax.default_backend()
+        return "unified"
 
     @property
     def device_summary(self) -> str:
-        return ", ".join(str(device) for device in jax.devices())
+        return f"MuJoCo {mujoco.__version__} rollout + JAX {jax.default_backend()} policy"
 
     @property
     def param_count(self) -> int:
@@ -1285,13 +1288,9 @@ class JaxESTrainer:
         return jnp.array([radius * jnp.cos(angle), radius * jnp.sin(angle), GOAL_HEIGHT_M], dtype=jnp.float32)
 
     def _run_logged_episode(self, params_flat: jax.Array, goal_xyz: jax.Array, key: jax.Array, on_step: Any, steps: int | None = None) -> float:
-        carry = _episode_init(goal_xyz, key)
         if steps is None:
-            steps = int(EPISODE_S / BRAIN_DT)
-        for step_i in range(steps):
-            carry = _episode_step_logged(params_flat, carry, goal_xyz)
-            on_step(_step_snapshot(carry, goal_xyz, step_i, steps))
-        return float(carry.total_reward)
+            steps = int(self.spec.episode.single_view_episode_s / self.spec.episode.brain_dt_s)
+        return self._rollout_backend.run_logged_episode(params_flat, goal_xyz, key, on_step, int(steps))
 
     def _run_population_episode(
         self,
@@ -1308,54 +1307,34 @@ class JaxESTrainer:
         Bots tipped for too long are killed in-carry.
         Returns final total_reward per bot.
         """
-        N = params_batch.shape[0]
-        carries = _batch_init(goal_xyz, eval_keys, spawn_xys)
+        params_batch_np = np.asarray(params_batch, dtype=np.float32)
+        if on_step is None or params_batch_np.shape[0] == 0:
+            return self._rollout_backend.run_population(
+                params_batch_np,
+                goal_xyz,
+                eval_keys,
+                int(EPISODE_S / BRAIN_DT),
+                spawn_xys=spawn_xys,
+            )
 
-        lifespan_steps = np.full(N, int(DEFAULT_LIFESPAN_S / BRAIN_DT), dtype=np.int32)
-        dead_np = np.zeros(N, dtype=bool)
-
-        selection_interval = int(SELECTION_INTERVAL_S / BRAIN_DT)
-        bonus_steps = int(LIFESPAN_BONUS_S / BRAIN_DT)
-        n_possible_bonuses = int(DEFAULT_LIFESPAN_S / SELECTION_INTERVAL_S)
-        max_total_steps = int(DEFAULT_LIFESPAN_S / BRAIN_DT) + n_possible_bonuses * bonus_steps
-
-        for step_i in range(max_total_steps):
-            carries = _batch_step(params_batch, carries, goal_xyz)
-
-            # Kill bots whose lifespan expired or were tipped out by the carry
-            lifespan_steps = np.where(~dead_np, lifespan_steps - 1, lifespan_steps)
-            tip_killed = np.asarray(carries.dead, dtype=bool)
-            dead_np = dead_np | (lifespan_steps <= 0) | tip_killed
-
-            # Periodic selection at every SELECTION_INTERVAL_S
-            if (step_i + 1) % selection_interval == 0:
-                alive_idx = np.where(~dead_np)[0]
-                n_alive = len(alive_idx)
-                if n_alive >= 2:
-                    step_levels = np.asarray(carries.max_step_reached, dtype=np.float32)
-                    order = alive_idx[np.argsort(step_levels[alive_idx])]
-
-                    n_extend = max(1, int(n_alive * SELECTION_TOP_FRAC))
-                    n_kill   = max(1, int(n_alive * SELECTION_BOT_FRAC))
-
-                    lifespan_steps[order[-n_extend:]] += bonus_steps
-                    dead_np[order[:n_kill]] = True
-
-            if on_step is not None:
-                on_step(
-                    {
-                        "type": "progress",
-                        "step": step_i,
-                        "total_steps": max_total_steps,
-                        "reward": float(np.asarray(carries.total_reward, dtype=np.float32).mean()),
-                        "time_s": round(step_i * BRAIN_DT, 2),
-                    }
-                )
-
-            if dead_np.all():
-                break
-
-        return np.asarray(carries.total_reward, dtype=np.float32)
+        returns = np.zeros((params_batch_np.shape[0],), dtype=np.float32)
+        returns[0] = self._rollout_backend.run_logged_episode(
+            params_batch_np[0],
+            goal_xyz,
+            eval_keys[0],
+            on_step,
+            int(EPISODE_S / BRAIN_DT),
+            spawn_xy=spawn_xys[0],
+        )
+        if params_batch_np.shape[0] > 1:
+            returns[1:] = self._rollout_backend.run_population(
+                params_batch_np[1:],
+                goal_xyz,
+                eval_keys[1:],
+                int(EPISODE_S / BRAIN_DT),
+                spawn_xys=spawn_xys[1:],
+            )
+        return returns
 
     def run_generation(self, on_step: Any = None, on_gen_done: Any = None) -> None:
         goal_xyz = self._random_goal()
@@ -1410,7 +1389,14 @@ class JaxESTrainer:
 
         # Evaluate the updated center params (no noise) so best_reward tracks the actual center.
         steps = int(EPISODE_S / BRAIN_DT)
-        center_return = float(np.asarray(_run_episode_flat(self._params, goal_xyz, center_key, steps)))
+        center_return = float(
+            self._rollout_backend.run_episode(
+                np.asarray(self._params, dtype=np.float32),
+                goal_xyz,
+                center_key,
+                steps,
+            )
+        )
 
         self.state.generation += 1
         self.state.mean_reward = float(returns_np.mean())
@@ -1452,6 +1438,7 @@ class JaxESTrainer:
             "rng_key": np.asarray(self._key, dtype=np.uint32),
             "seed": np.int32(self.seed),
             "backend": np.array(self.backend),
+            "compute_backend": np.array(jax.default_backend()),
             "config_json": np.array(canonical_config_json(self.spec)),
             "config_name": np.array(self.spec.name),
             "simulator_backend": np.array(self.spec.simulator.backend),
@@ -1468,10 +1455,10 @@ class JaxESTrainer:
         with np.load(checkpoint_path, allow_pickle=False) as checkpoint:
             if "config_json" in checkpoint.files:
                 checkpoint_config_json = str(checkpoint["config_json"].item())
-                if checkpoint_config_json != canonical_config_json(self.spec):
+                if not config_json_matches_checkpoint(self.spec, checkpoint_config_json):
                     raise ValueError(
-                        "Checkpoint config does not match the active runtime spec. "
-                        "Use the same config file to resume training."
+                        "Checkpoint config does not match the active runtime spec aside from backend selection. "
+                        "Use a compatible config file to resume training."
                     )
             params = checkpoint["params"]
             if params.shape != (PARAM_COUNT,):
@@ -1511,8 +1498,7 @@ class JaxESTrainer:
             self.state.rewards_history = [float(v) for v in checkpoint["rewards_history"].tolist()]
             self._key = jnp.asarray(checkpoint["rng_key"], dtype=jnp.uint32)
 
-
-ESTrainer = JaxESTrainer
+JaxESTrainer = ESTrainer
 
 apply_runtime_spec(ACTIVE_SPEC)
 
@@ -1520,8 +1506,8 @@ __all__ = [
     "EPISODE_S",
     "POP_SIZE",
     "TrainingState",
-    "JaxESTrainer",
     "ESTrainer",
+    "JaxESTrainer",
     "apply_runtime_spec",
     "current_environment_model",
     "current_robot_model",

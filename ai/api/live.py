@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ai.config import DEFAULT_CONFIG_PATH, load_runtime_spec
 from ai.runtime import viewer_checkpoint_candidates
-from ai.trainer import ESTrainer, apply_runtime_spec
+from ai.jax_trainer import ESTrainer, apply_runtime_spec
 
 from .common import (
     BroadcastHub,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,30 @@ def save_runtime_spec(path: str | Path, spec: RuntimeSpec) -> Path:
 
 def canonical_config_json(spec: RuntimeSpec) -> str:
     return json.dumps(spec.to_dict(), indent=2, sort_keys=True)
+
+
+def backend_agnostic_config_dict(spec_or_dict: RuntimeSpec | dict[str, Any]) -> dict[str, Any]:
+    data = deepcopy(spec_or_dict.to_dict() if isinstance(spec_or_dict, RuntimeSpec) else spec_or_dict)
+    simulator = data.get("simulator")
+    if isinstance(simulator, dict):
+        simulator.pop("backend", None)
+    return data
+
+
+def canonical_backend_agnostic_config_json(spec: RuntimeSpec) -> str:
+    return json.dumps(backend_agnostic_config_dict(spec), indent=2, sort_keys=True)
+
+
+def config_json_matches_checkpoint(spec: RuntimeSpec, checkpoint_config_json: str) -> bool:
+    try:
+        checkpoint_data = json.loads(checkpoint_config_json)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(checkpoint_data, dict):
+        return False
+    active_json = json.dumps(backend_agnostic_config_dict(spec), sort_keys=True)
+    checkpoint_json = json.dumps(backend_agnostic_config_dict(checkpoint_data), sort_keys=True)
+    return active_json == checkpoint_json
 
 
 def default_runtime_spec() -> RuntimeSpec:

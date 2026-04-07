@@ -101,7 +101,7 @@ class QualityGateRunner:
         self.spec = spec
 
     def run(self) -> QualityReport:
-        if self.spec.simulator.backend == "mujoco":
+        if self.spec.quality_gates.profile == "runtime":
             return self._run_mujoco()
         trainer_module.apply_runtime_spec(self.spec)
         results = [

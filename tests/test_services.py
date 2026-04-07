@@ -14,12 +14,12 @@ from ai.runtime import resolve_viewer_checkpoint
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _write_checkpoint(path: Path, config_path: Path) -> None:
+def _write_checkpoint(path: Path, config_path: Path, *, simulator_backend: str | None = None) -> None:
     spec = load_runtime_spec(config_path)
     np.savez_compressed(
         path,
         config_json=np.array(canonical_config_json(spec)),
-        simulator_backend=np.array(spec.simulator.backend),
+        simulator_backend=np.array(simulator_backend or spec.simulator.backend),
     )
 
 
@@ -38,14 +38,14 @@ class ServiceImportTests(unittest.TestCase):
 
             self.assertEqual(resolve_viewer_checkpoint(root), root / "latest.npz")
 
-    def test_checkpoint_resolution_skips_incompatible_candidates(self) -> None:
+    def test_checkpoint_resolution_allows_backend_only_difference(self) -> None:
         jax_spec = load_runtime_spec(PROJECT_ROOT / "configs" / "smoke.yaml")
         with TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            _write_checkpoint(root / "latest.npz", PROJECT_ROOT / "configs" / "smoke_mujoco.yaml")
+            _write_checkpoint(root / "latest.npz", PROJECT_ROOT / "configs" / "smoke.yaml", simulator_backend="mujoco")
             _write_checkpoint(root / "best.npz", PROJECT_ROOT / "configs" / "smoke.yaml")
 
-            self.assertEqual(resolve_viewer_checkpoint(root, spec=jax_spec), root / "best.npz")
+            self.assertEqual(resolve_viewer_checkpoint(root, spec=jax_spec), root / "latest.npz")
 
 
 if __name__ == "__main__":
