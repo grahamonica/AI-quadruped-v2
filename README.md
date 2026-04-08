@@ -102,6 +102,35 @@ cd frontend
 npm install
 ```
 
+**Docker Setup (Optional)**
+
+For reproducible environments and CI/CD compatibility:
+
+```bash
+# Build Docker image with pinned dependencies
+docker build -t ai-quadruped:latest .
+
+# Run tests in Docker (same environment as CI)
+docker run --rm ai-quadruped:latest
+
+# Run headless training in Docker
+docker run --rm \
+  -v $(pwd):/workspace \
+  ai-quadruped:latest \
+  python train_headless.py --config configs/smoke.yaml --generations 10
+```
+
+For GPU acceleration (requires `nvidia-docker2`):
+
+```bash
+docker run --rm --gpus all \
+  -v $(pwd):/workspace \
+  ai-quadruped:latest \
+  python train_headless.py --config configs/default.yaml --generations 100
+```
+To locally mimic the Github Actions Linux behavior run this (for a mac):
+docker run --rm --platform linux/amd64 ai-quadruped:latest
+
 **Quick Start**
 
 Run the fast validation profile end to end:

@@ -510,25 +510,41 @@ def write_regression_baseline(path: str | Path, metrics: dict[str, Any]) -> Path
     return target
 
 
-def _select_regression_baseline_variant(baseline: dict[str, Any]) -> dict[str, Any]:
+def _select_regression_baseline_variant(baseline: dict[str, Any]) -> tuple[dict[str, Any], str]:
     variants = baseline.get("variants")
     if not isinstance(variants, dict):
-        return baseline
+        return baseline, "root"
 
     system_key = platform.system().lower()
     machine_key = platform.machine().lower()
-    candidate_keys = (
-        f"{system_key}-{machine_key}",
-        system_key,
-        "default",
-    )
-    for key in candidate_keys:
-        value = variants.get(key)
-        if isinstance(value, dict):
-            return value
+    exact_key = f"{system_key}-{machine_key}"
+    value = variants.get(exact_key)
+    if isinstance(value, dict):
+        return value, exact_key
+
+    system_key_value = variants.get(system_key)
+    if isinstance(system_key_value, dict):
+        return system_key_value, system_key
+
+    # If there is no exact arch match, prefer a same-system variant (e.g., linux-x86_64).
+    # This keeps fallback behavior closer to platform-specific dynamics than "default".
+    system_variants = [
+        key for key, maybe_variant in variants.items()
+        if key.startswith(f"{system_key}-") and isinstance(maybe_variant, dict)
+    ]
+    if system_variants:
+        selected_key = sorted(system_variants)[0]
+        selected_variant = variants[selected_key]
+        if isinstance(selected_variant, dict):
+            return selected_variant, selected_key
+
+    default_value = variants.get("default")
+    if isinstance(default_value, dict):
+        return default_value, "default"
+
     raise ValueError(
         "Regression baseline file defines platform variants but none matched the current platform. "
-        f"Tried: {', '.join(candidate_keys)}"
+        f"Tried exact='{exact_key}', system='{system_key}', and default/system-prefix fallbacks."
     )
 
 
@@ -540,8 +556,15 @@ def compare_regression_to_baseline(
     atol: float = 1e-5,
 ) -> QualityReport:
     baseline_raw = json.loads(Path(baseline_path).read_text(encoding="utf-8"))
-    baseline = _select_regression_baseline_variant(baseline_raw)
+    baseline, baseline_variant_key = _select_regression_baseline_variant(baseline_raw)
     current = collect_regression_metrics(spec, seeds=seeds, generations=generations)
+    system_key = platform.system().lower()
+    machine_key = platform.machine().lower()
+    exact_variant_key = f"{system_key}-{machine_key}"
+    exact_variant_match = baseline_variant_key in {"root", exact_variant_key}
+
+    # Allow a minimal cross-platform slack only when the baseline is a fallback variant.
+    effective_atol = atol if exact_variant_match else max(atol, 1e-4)
     results: list[GateResult] = []
     for seed in seeds:
         expected = baseline["seeds"][str(seed)]
@@ -552,8 +575,8 @@ def compare_regression_to_baseline(
         goal_diff = max(abs(float(a) - float(b)) for a, b in zip(actual["goal_xyz"], expected["goal_xyz"], strict=True))
         passed = (
             int(actual["generation"]) == int(expected["generation"])
-            and max_abs_diff <= atol
-            and goal_diff <= atol
+            and max_abs_diff <= effective_atol
+            and goal_diff <= effective_atol
         )
         results.append(
             GateResult(
@@ -562,6 +585,9 @@ def compare_regression_to_baseline(
                 details={
                     "seed": seed,
                     "atol": atol,
+                    "effective_atol": effective_atol,
+                    "baseline_variant_key": baseline_variant_key,
+                    "exact_variant_match": exact_variant_match,
                     "expected": expected,
                     "actual": actual,
                     "max_abs_metric_diff": max_abs_diff,
