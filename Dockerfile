@@ -1,4 +1,4 @@
-# Multi-stage build for AI Quadruped v2
+# Multi-stage build for Multi-Brain Quadruped Sim
 # Stage 1: Builder with all dev dependencies
 FROM python:3.12-slim-bookworm AS builder
 

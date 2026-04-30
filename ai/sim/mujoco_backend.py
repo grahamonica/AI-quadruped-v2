@@ -303,6 +303,25 @@ class MuJoCoBackend:
         threshold = floor_height + self.robot.legs[0].foot_radius_m + self.spec.simulator.mujoco.contact_margin_m
         return "static" if float(foot_position[2]) <= threshold else "airborne"
 
+    def _body_corners_world(self, data: mujoco.MjData) -> list[list[float]]:
+        half_extents = np.asarray(self.robot.body.half_extents_m, dtype=np.float32)
+        local_corners = []
+        for sx in (-1.0, 1.0):
+            for sy in (-1.0, 1.0):
+                for sz in (-1.0, 1.0):
+                    local_corners.append(
+                        [
+                            float(sx * half_extents[0]),
+                            float(sy * half_extents[1]),
+                            float(sz * half_extents[2]),
+                        ]
+                    )
+        local_corners_np = np.asarray(local_corners, dtype=np.float32)
+        body_pos = self.body_position(data)
+        body_rotation = np.asarray(data.xmat[self._torso_body_id], dtype=np.float32).reshape(3, 3)
+        world_corners = body_pos[None, :] + np.matmul(local_corners_np, body_rotation.T)
+        return world_corners.tolist()
+
     def _snapshot(
         self,
         data: mujoco.MjData,
@@ -317,20 +336,17 @@ class MuJoCoBackend:
         foot_positions = self.foot_positions(data)
         leg_com_positions = self.leg_com_positions(data)
         leg_angles = self.leg_angles(data)
+        leg_velocities = self.leg_velocities(data)
 
         legs = []
         motors = []
         for index, leg in enumerate(self.robot.legs):
-            mount = [
-                float(body_pos[0] + leg.mount_point_body[0]),
-                float(body_pos[1] + leg.mount_point_body[1]),
-                float(body_pos[2] + leg.mount_point_body[2]),
-            ]
+            mount = np.asarray(data.xpos[self._leg_body_ids[index]], dtype=np.float32)
             foot_position = foot_positions[index]
             legs.append(
                 {
                     "name": leg.name,
-                    "mount": mount,
+                    "mount": mount.tolist(),
                     "foot": foot_position.tolist(),
                     "com": leg_com_positions[index].tolist(),
                     "angle_rad": float(leg_angles[index]),
@@ -340,21 +356,9 @@ class MuJoCoBackend:
             motors.append(
                 {
                     "name": leg.name,
-                    "target_velocity_rad_s": float(self.leg_velocities(data)[index]),
+                    "target_velocity_rad_s": float(leg_velocities[index]),
                 }
             )
-
-        half_extents = self.robot.body.half_extents_m
-        body_corners = []
-        for sx in (-1.0, 1.0):
-            for sy in (-1.0, 1.0):
-                body_corners.append(
-                    [
-                        float(body_pos[0] + sx * half_extents[0]),
-                        float(body_pos[1] + sy * half_extents[1]),
-                        float(body_pos[2]),
-                    ]
-                )
 
         return {
             "type": "step",
@@ -366,7 +370,7 @@ class MuJoCoBackend:
                 "pos": body_pos.tolist(),
                 "rot": body_rot.tolist(),
                 "com": body_pos.tolist(),
-                "corners": body_corners,
+                "corners": self._body_corners_world(data),
             },
             "com": com.tolist(),
             "legs": legs,

@@ -38,13 +38,17 @@ def single_step_to_viewer_frame(step_message: dict[str, Any], generation: int, s
     com = step_message["com"]
     body_pos = step_message["body"]["pos"]
     body_rot = step_message["body"]["rot"]
-    leg_angles = [float(leg["angle_rad"]) for leg in step_message["legs"]]
+    body = step_message.get("body", {})
+    legs = step_message.get("legs", [])
+    leg_angles = [float(leg.get("angle_rad", 0.0)) for leg in legs]
     level = int(step_message.get("level", step_level_at(spec, com[:2])))
     return {
         "type": "frame",
         "pos": [float(value) for value in body_pos],
         "rot": [float(value) for value in body_rot],
         "leg": leg_angles,
+        "body": body,
+        "legs": legs,
         "level": [level],
         "n": 1,
         "gen": generation,

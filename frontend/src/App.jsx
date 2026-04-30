@@ -21,7 +21,10 @@ const DEFAULT_METADATA = {
   robot: {
     body_length_m: 0.28,
     body_width_m: 0.12,
+    body_height_m: 0.08,
     leg_length_m: 0.16,
+    leg_radius_m: 0.02,
+    foot_radius_m: 0.03,
   },
   training: {
     population_size: 32,
@@ -36,6 +39,28 @@ const DEFAULT_METADATA = {
 
 const STEP_COLORS = ["#203423", "#2f6540", "#699249", "#d6a74b", "#db7440", "#d95066"];
 const MODEL_COLORS = ["#7cf2a1", "#8af65d", "#f3df69", "#ff9d51", "#ff6a8a", "#ff7fd0"];
+const BODY_BOX_EDGES = [
+  [0, 1],
+  [0, 2],
+  [0, 4],
+  [1, 3],
+  [1, 5],
+  [2, 3],
+  [2, 6],
+  [3, 7],
+  [4, 5],
+  [4, 6],
+  [5, 7],
+  [6, 7],
+];
+const BODY_BOX_FACES = [
+  [0, 1, 3, 2],
+  [4, 5, 7, 6],
+  [0, 1, 5, 4],
+  [2, 3, 7, 6],
+  [0, 2, 6, 4],
+  [1, 3, 7, 5],
+];
 
 function rotMat(rot) {
   const [r, p, y] = rot;
@@ -141,17 +166,103 @@ function drawGoal(ctx, cam, width, height, goal) {
   ctx.restore();
 }
 
+function drawBodyFromCorners(ctx, corners, cam, width, height, color) {
+  if (!Array.isArray(corners) || corners.length < 8) return;
+  const projected = corners.map((point) => project(point[0], point[1], point[2], cam, width, height));
+
+  ctx.save();
+  ctx.fillStyle = `${color}18`;
+  for (const [a, b, c, d] of BODY_BOX_FACES) {
+    ctx.beginPath();
+    ctx.moveTo(projected[a][0], projected[a][1]);
+    ctx.lineTo(projected[b][0], projected[b][1]);
+    ctx.lineTo(projected[c][0], projected[c][1]);
+    ctx.lineTo(projected[d][0], projected[d][1]);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.7;
+  ctx.beginPath();
+  for (const [start, end] of BODY_BOX_EDGES) {
+    ctx.moveTo(projected[start][0], projected[start][1]);
+    ctx.lineTo(projected[end][0], projected[end][1]);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawLegsFromPhysics(ctx, legs, cam, width, height, color) {
+  if (!Array.isArray(legs) || legs.length === 0) return;
+
+  ctx.save();
+  ctx.strokeStyle = `${color}cc`;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  for (const leg of legs) {
+    const mount = leg?.mount;
+    const foot = leg?.foot;
+    if (!Array.isArray(mount) || mount.length < 3 || !Array.isArray(foot) || foot.length < 3) continue;
+    const mountPoint = project(mount[0], mount[1], mount[2], cam, width, height);
+    const footPoint = project(foot[0], foot[1], foot[2], cam, width, height);
+    ctx.moveTo(mountPoint[0], mountPoint[1]);
+    ctx.lineTo(footPoint[0], footPoint[1]);
+  }
+  ctx.stroke();
+
+  for (const leg of legs) {
+    const mount = leg?.mount;
+    const foot = leg?.foot;
+    if (!Array.isArray(mount) || mount.length < 3 || !Array.isArray(foot) || foot.length < 3) continue;
+    const mountPoint = project(mount[0], mount[1], mount[2], cam, width, height);
+    const footPoint = project(foot[0], foot[1], foot[2], cam, width, height);
+
+    ctx.beginPath();
+    ctx.arc(mountPoint[0], mountPoint[1], 2.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(footPoint[0], footPoint[1], 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
 function drawModel(ctx, frame, cam, width, height, robot) {
-  if (!frame || !frame.pos || frame.pos.length < 3 || !frame.rot || frame.rot.length < 3) return;
+  if (!frame) return;
+
+  const level = Math.min(Math.max(Math.round(frame.level?.[0] || 0), 0), MODEL_COLORS.length - 1);
+  const color = MODEL_COLORS[level];
+  const bodyCorners = frame?.body?.corners;
+  const legs = frame?.legs;
+
+  let renderedPhysicsGeometry = false;
+  if (Array.isArray(bodyCorners) && bodyCorners.length >= 8) {
+    drawBodyFromCorners(ctx, bodyCorners, cam, width, height, color);
+    renderedPhysicsGeometry = true;
+  }
+  if (Array.isArray(legs) && legs.length > 0) {
+    drawLegsFromPhysics(ctx, legs, cam, width, height, color);
+    renderedPhysicsGeometry = true;
+  }
+  if (renderedPhysicsGeometry) return;
+
+  if (!frame.pos || frame.pos.length < 3 || !frame.rot || frame.rot.length < 3) return;
 
   const bodyHalfLength = robot.body_length_m / 2;
   const bodyHalfWidth = robot.body_width_m / 2;
+  const bodyHalfHeight = robot.body_height_m / 2;
   const legLength = robot.leg_length_m;
   const bodyCornersBody = [
-    [-bodyHalfLength, -bodyHalfWidth, 0],
-    [bodyHalfLength, -bodyHalfWidth, 0],
-    [bodyHalfLength, bodyHalfWidth, 0],
-    [-bodyHalfLength, bodyHalfWidth, 0],
+    [-bodyHalfLength, -bodyHalfWidth, -bodyHalfHeight],
+    [-bodyHalfLength, -bodyHalfWidth, bodyHalfHeight],
+    [-bodyHalfLength, bodyHalfWidth, -bodyHalfHeight],
+    [-bodyHalfLength, bodyHalfWidth, bodyHalfHeight],
+    [bodyHalfLength, -bodyHalfWidth, -bodyHalfHeight],
+    [bodyHalfLength, -bodyHalfWidth, bodyHalfHeight],
+    [bodyHalfLength, bodyHalfWidth, -bodyHalfHeight],
+    [bodyHalfLength, bodyHalfWidth, bodyHalfHeight],
   ];
   const mountsBody = [
     [bodyHalfLength, bodyHalfWidth, 0],
@@ -163,33 +274,15 @@ function drawModel(ctx, frame, cam, width, height, robot) {
   const bodyPos = frame.pos.slice(0, 3);
   const bodyRot = frame.rot.slice(0, 3);
   const legAngles = frame.leg || [];
-  const level = Math.min(Math.max(Math.round(frame.level?.[0] || 0), 0), MODEL_COLORS.length - 1);
-  const color = MODEL_COLORS[level];
   const rotation = rotMat(bodyRot);
 
-  const projectedBody = bodyCornersBody.map((corner) => {
+  const worldBodyCorners = bodyCornersBody.map((corner) => {
     const world = applyRot(rotation, corner);
-    return project(
-      bodyPos[0] + world[0],
-      bodyPos[1] + world[1],
-      bodyPos[2] + world[2],
-      cam,
-      width,
-      height,
-    );
+    return [bodyPos[0] + world[0], bodyPos[1] + world[1], bodyPos[2] + world[2]];
   });
+  drawBodyFromCorners(ctx, worldBodyCorners, cam, width, height, color);
 
   ctx.save();
-  ctx.fillStyle = `${color}22`;
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(projectedBody[0][0], projectedBody[0][1]);
-  for (let i = 1; i < projectedBody.length; i += 1) ctx.lineTo(projectedBody[i][0], projectedBody[i][1]);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
   ctx.strokeStyle = `${color}bb`;
   ctx.lineWidth = 1.3;
   ctx.beginPath();

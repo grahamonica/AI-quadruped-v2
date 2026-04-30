@@ -97,6 +97,10 @@ def build_viewer_metadata(spec: RuntimeSpec, mode: str) -> ViewerMetadata:
         "body_width_m": robot_model.body.width_m,
         "body_height_m": robot_model.body.height_m,
         "leg_length_m": robot_model.legs[0].length_m,
+        "leg_radius_m": robot_model.legs[0].radius_m,
+        "foot_radius_m": robot_model.legs[0].foot_radius_m,
+        "mount_points_body": [list(leg.mount_point_body) for leg in robot_model.legs],
+        "rotation_axes_body": [list(leg.rotation_axis_body) for leg in robot_model.legs],
         "leg_names": list(robot_model.leg_names),
     }
     goal = {

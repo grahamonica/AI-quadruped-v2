@@ -1,4 +1,4 @@
-# AI Quadruped v2
+# Multi-Brain Quadruped Sim
 
 Config-driven quadruped training stack. The repo is organized as follows: a domain layer for the robot and environment, packaged runtime code under `ai/`, declarative configs, structured logs, regression tests, and one live viewer stack. The runtime uses JAX for policy math and optimization, and MuJoCo for rollout and playback.
 
@@ -23,10 +23,10 @@ Config-driven quadruped training stack. The repo is organized as follows: a doma
 
 The runtime is split into four layers:
 
-1. Domain layer: [quadruped/robot.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/robot.py), [quadruped/leg.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/leg.py), [quadruped/motor.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/motor.py), and [quadruped/environment.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/environment.py) define the robot and task in a logical, real-world shape.
-2. Config layer: [ai/config/schema.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/config/schema.py) resolves YAML/JSON into a typed runtime spec.
-3. Runtime layer: [ai/sim/mujoco_backend.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_backend.py) owns rollout execution, and [ai/sim/mujoco_model_builder.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_model_builder.py) is the only place that translates domain objects into MuJoCo MJCF. [ai/sim/jax_backend.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/jax_backend.py) remains only as an internal reference helper for quality checks.
-4. Training and service layer: [ai/jax_trainer.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/jax_trainer.py) contains the single ES trainer implementation. That trainer keeps optimization and policy math in JAX and always drives rollout through MuJoCo. The service layer exposes the viewer and headless workflows on top of that shared trainer.
+1. Domain layer: [quadruped/robot.py](quadruped/robot.py), [quadruped/leg.py](quadruped/leg.py), [quadruped/motor.py](quadruped/motor.py), and [quadruped/environment.py](quadruped/environment.py) define the robot and task in a logical, real-world shape.
+2. Config layer: [ai/config/schema.py](ai/config/schema.py) resolves YAML/JSON into a typed runtime spec.
+3. Runtime layer: [ai/sim/mujoco_backend.py](ai/sim/mujoco_backend.py) owns rollout execution, and [ai/sim/mujoco_model_builder.py](ai/sim/mujoco_model_builder.py) is the only place that translates domain objects into MuJoCo MJCF. [ai/sim/jax_backend.py](ai/sim/jax_backend.py) remains only as an internal reference helper for quality checks.
+4. Training and service layer: [ai/jax_trainer.py](ai/jax_trainer.py) contains the single ES trainer implementation. That trainer keeps optimization and policy math in JAX and always drives rollout through MuJoCo. The service layer exposes the viewer and headless workflows on top of that shared trainer.
 
 
 **Runtime Backend**
@@ -60,7 +60,7 @@ The rollout path is built from the existing domain objects. The flow is:
 
 1. `config` -> typed `RuntimeSpec`
 2. `RuntimeSpec` -> `QuadrupedRobot` and `SimulationEnvironment`
-3. domain models -> MuJoCo MJCF in [ai/sim/mujoco_model_builder.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/sim/mujoco_model_builder.py)
+3. domain models -> MuJoCo MJCF in [ai/sim/mujoco_model_builder.py](ai/sim/mujoco_model_builder.py)
 4. compiled model -> `MuJoCoBackend`
 5. runtime backend -> trainer, quality gates, APIs, and frontend metadata
 
@@ -68,9 +68,9 @@ The frontend still consumes the same websocket frame shape, and checkpoints rema
 
 **Runtime Spec**
 
-The trainer reads a resolved environment/task spec from YAML or JSON. The main configs live at [configs/default.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/default.yaml) and [configs/smoke.yaml](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/configs/smoke.yaml).
+The trainer reads a resolved environment/task spec from YAML or JSON. The main configs live at [configs/default.yaml](configs/default.yaml) and [configs/smoke.yaml](configs/smoke.yaml).
 
-The runtime is fed through explicit domain objects in [quadruped/robot.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/robot.py), [quadruped/leg.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/leg.py), [quadruped/motor.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/motor.py), and [quadruped/environment.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/quadruped/environment.py). MuJoCo uses that shared source of truth and compiles it into MJCF instead of duplicating dimensions or terrain constants in rollout code.
+The runtime is fed through explicit domain objects in [quadruped/robot.py](quadruped/robot.py), [quadruped/leg.py](quadruped/leg.py), [quadruped/motor.py](quadruped/motor.py), and [quadruped/environment.py](quadruped/environment.py). MuJoCo uses that shared source of truth and compiles it into MJCF instead of duplicating dimensions or terrain constants in rollout code.
 
 Supported sections:
 
@@ -108,15 +108,15 @@ For reproducible environments and CI/CD compatibility:
 
 ```bash
 # Build Docker image with pinned dependencies
-docker build -t ai-quadruped:latest .
+docker build -t multi-brain-quadruped-sim:latest .
 
 # Run tests in Docker (same environment as CI)
-docker run --rm ai-quadruped:latest
+docker run --rm multi-brain-quadruped-sim:latest
 
 # Run headless training in Docker
 docker run --rm \
   -v $(pwd):/workspace \
-  ai-quadruped:latest \
+  multi-brain-quadruped-sim:latest \
   python train_headless.py --config configs/smoke.yaml --generations 10
 ```
 
@@ -125,11 +125,11 @@ For GPU acceleration (requires `nvidia-docker2`):
 ```bash
 docker run --rm --gpus all \
   -v $(pwd):/workspace \
-  ai-quadruped:latest \
+  multi-brain-quadruped-sim:latest \
   python train_headless.py --config configs/default.yaml --generations 100
 ```
 To locally mimic the Github Actions Linux behavior run this (for a mac):
-docker run --rm --platform linux/amd64 ai-quadruped:latest
+docker run --rm --platform linux/amd64 multi-brain-quadruped-sim:latest
 
 **Quick Start**
 
@@ -173,7 +173,7 @@ The smoke config uses the `runtime` profile. That suite covers:
 - the internal JAX reference path and the runtime path show bounded drift on a fixed smoke rollout
 - MuJoCo rollout time stays inside the configured budget
 
-Fixed-seed regression coverage is enforced in the test suite using the smoke config baseline at [tests/fixtures/smoke_regression_baseline.json](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/tests/fixtures/smoke_regression_baseline.json).
+Fixed-seed regression coverage is enforced in the test suite using the smoke config baseline at [tests/fixtures/smoke_regression_baseline.json](tests/fixtures/smoke_regression_baseline.json).
 
 Run the repo tests locally:
 
@@ -204,7 +204,7 @@ It uses the same runtime config pattern as the headless path, so terrain and rob
 
 **How Config Flows Through The System**
 
-1. A YAML or JSON file is loaded through [ai/config/schema.py](/Users/monicagraham/Desktop/GitHub/AI-quadruped-v2/ai/config/schema.py).
+1. A YAML or JSON file is loaded through [ai/config/schema.py](ai/config/schema.py).
 2. That config is converted into domain objects in `quadruped/`.
 3. The single ES trainer applies those values to its runtime constants and cached tensors.
 4. The runtime backend is constructed from those same resolved objects and attached under that trainer.
