@@ -1,0 +1,10 @@
+<mujoco model="ground_grid">
+  <asset>
+    <texture name="ground_checker" type="2d" builtin="checker" width="512" height="512" rgb1="0.08 0.13 0.09" rgb2="0.16 0.23 0.17"/>
+    <material name="ground_grid" texture="ground_checker" texuniform="true" texrepeat="18 18" reflectance="0.03"/>
+  </asset>
+  <worldbody>
+    <light pos="0 0 5" dir="0 0 -1" directional="true"/>
+    <geom name="ground" type="plane" pos="0 0 0.000000" size="15.000000 15.000000 0.1" friction="0.9000 0.0025 0.0001" material="ground_grid" margin="0.002000"/>
+  </worldbody>
+</mujoco>

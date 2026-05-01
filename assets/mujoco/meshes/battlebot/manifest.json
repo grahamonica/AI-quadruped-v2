@@ -1,0 +1,45 @@
+{
+  "angular_deflection": 0.5,
+  "ground_xml": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/assets/mujoco/ground_grid.xml",
+  "linear_deflection": 0.001,
+  "mesh_dir": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/assets/mujoco/meshes/battlebot",
+  "mesh_scale": [
+    0.001,
+    0.001,
+    0.001
+  ],
+  "model_name": "battlebot",
+  "part_mode": "shells-if-no-solids",
+  "parts": [
+    {
+      "geom_name": "rupture_mini_chassis_solid_001_geom",
+      "index": 1,
+      "kind": "solid",
+      "mass_kg": 0.3333333333333333,
+      "mesh_name": "rupture_mini_chassis_solid_001_mesh",
+      "source_step": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/battlebot_step/Rupture Mini Chassis.step",
+      "stl_file": "rupture_mini_chassis_solid_001.stl"
+    },
+    {
+      "geom_name": "rupture_mini_weapon_solid_002_geom",
+      "index": 2,
+      "kind": "solid",
+      "mass_kg": 0.3333333333333333,
+      "mesh_name": "rupture_mini_weapon_solid_002_mesh",
+      "source_step": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/battlebot_step/Rupture Mini Weapon.step",
+      "stl_file": "rupture_mini_weapon_solid_002.stl"
+    },
+    {
+      "geom_name": "rupture_mini_wheel_solid_003_geom",
+      "index": 3,
+      "kind": "solid",
+      "mass_kg": 0.3333333333333333,
+      "mesh_name": "rupture_mini_wheel_solid_003_mesh",
+      "source_step": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/battlebot_step/Rupture Mini Wheel.step",
+      "stl_file": "rupture_mini_wheel_solid_003.stl"
+    }
+  ],
+  "robot_xml": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/assets/mujoco/battlebot.xml",
+  "scene_xml": "/Users/monicagraham/Desktop/GitHub/multi-brain-quadruped-sim/assets/mujoco/battlebot_scene.xml",
+  "total_mass_kg": 1.0
+}

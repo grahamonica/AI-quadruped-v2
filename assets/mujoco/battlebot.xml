@@ -1,0 +1,26 @@
+<?xml version="1.0" ?>
+<mujoco model="battlebot">
+  <compiler angle="radian" autolimits="true" inertiafromgeom="true"/>
+  <option timestep="0.002500" gravity="0 0 -9.810000" integrator="implicitfast" solver="Newton"/>
+  <asset>
+    <mesh name="rupture_mini_chassis_solid_001_mesh" file="meshes/battlebot/rupture_mini_chassis_solid_001.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="rupture_mini_weapon_solid_002_mesh" file="meshes/battlebot/rupture_mini_weapon_solid_002.stl" scale="0.001 0.001 0.001"/>
+    <mesh name="rupture_mini_wheel_solid_003_mesh" file="meshes/battlebot/rupture_mini_wheel_solid_003.stl" scale="0.001 0.001 0.001"/>
+  </asset>
+  <default>
+    <geom contype="1" conaffinity="1" condim="4" margin="0.002000" solref="0.005 1"/>
+    <joint armature="0.01"/>
+  </default>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+  </visual>
+  <worldbody>
+    <body name="battlebot" pos="0 0 0.05">
+      <freejoint name="root_free"/>
+      <geom name="rupture_mini_chassis_solid_001_geom" type="mesh" mesh="rupture_mini_chassis_solid_001_mesh" mass="0.5" friction="0.9 0.01 0.001" rgba="0.82 0.82 0.78 1"/>
+      <geom name="rupture_mini_weapon_solid_002_geom" type="mesh" mesh="rupture_mini_weapon_solid_002_mesh" pos="-0.0104775 -0.013284057 0.009372451" quat="0.5 0.5 0.5 0.5" mass="0.25" friction="0.9 0.01 0.001" rgba="0.02 0.018 0.015 1"/>
+      <geom name="rupture_mini_wheel_left_geom" type="mesh" mesh="rupture_mini_wheel_solid_003_mesh" pos="-0.021191381 0.004314427 0.005547544" quat="0.70710678 0 -0.70710678 0" mass="0.125" friction="1.1 0.02 0.001" rgba="0.015 0.014 0.013 1"/>
+      <geom name="rupture_mini_wheel_right_geom" type="mesh" mesh="rupture_mini_wheel_solid_003_mesh" pos="0.021191381 0.004314427 0.005547544" quat="0.70710678 0 0.70710678 0" mass="0.125" friction="1.1 0.02 0.001" rgba="0.015 0.014 0.013 1"/>
+    </body>
+  </worldbody>
+</mujoco>

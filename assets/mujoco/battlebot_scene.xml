@@ -1,0 +1,5 @@
+<?xml version="1.0" ?>
+<mujoco model="battlebot_scene">
+  <include file="ground_grid.xml"/>
+  <include file="battlebot.xml"/>
+</mujoco>
