@@ -7,17 +7,33 @@ from .direction_harness import (
     HarnessRun,
     MotionCommand,
 )
-from .head_camera_harness import CameraConfig, HeadCameraHarness
-from .vla_harness import VLAAgent, VLAHarness
+from .discrete_leg_harness import (
+    ACTION_DELTAS,
+    DEFAULT_BRAIN_DT_S,
+    DiscreteLegHarness,
+    EpisodeResult,
+    LEG_DELTA_RAD,
+    NUM_ACTIONS,
+    NUM_LEGS,
+    StepResult,
+    positional_encoding,
+    positional_encoding_size,
+)
 
 __all__ = [
-    "CameraConfig",
+    "ACTION_DELTAS",
     "CommandPlan",
+    "DEFAULT_BRAIN_DT_S",
     "DirectionHarness",
+    "DiscreteLegHarness",
+    "EpisodeResult",
     "HarnessOption",
     "HarnessRun",
-    "HeadCameraHarness",
+    "LEG_DELTA_RAD",
     "MotionCommand",
-    "VLAAgent",
-    "VLAHarness",
+    "NUM_ACTIONS",
+    "NUM_LEGS",
+    "StepResult",
+    "positional_encoding",
+    "positional_encoding_size",
 ]

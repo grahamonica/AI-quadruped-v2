@@ -1,24 +1,3 @@
 {
-  "models": [
-    {
-      "architecture": "linear_commands",
-      "description": "Command-level policy (command logits + hold-duration head).",
-      "input_size": 48,
-      "output_size": 6,
-      "parameter_count": 294,
-      "policy_entrypoint": "brains.models.reference_linear_plugin:build_linear_policy",
-      "trainer": "openai_es",
-      "type": "notebook_command_brain_v1"
-    },
-    {
-      "architecture": "shared_trunk_motor_lanes",
-      "description": "Local shared-trunk baseline registered from notebook.",
-      "input_size": 48,
-      "output_size": 4,
-      "parameter_count": 48516,
-      "policy_entrypoint": null,
-      "trainer": "openai_es",
-      "type": "notebook_shared_trunk_v1"
-    }
-  ]
+  "models": []
 }
