@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
@@ -52,8 +52,36 @@ COMMAND_DEFAULT_SPEEDS: dict[str, float] = {
     "turn_right": 0.55,
     "front_flip": 1.00,
     "back_flip": 1.00,
-    "side_roll": 0.75,
+    "side_roll": 1.00,
 }
+# Leg order: [front_left, front_right, rear_left, rear_right]
+STUNT_PHASES: dict[str, tuple[tuple[float, ...], tuple[np.ndarray, ...]]] = {
+    "side_roll": (
+        (0.80, 1.20, 1.00),
+        (
+            np.asarray([-90.0, 0.0, 90.0, 0.0], dtype=np.float32),
+            np.asarray([10.0, -180.0, -10.0, 180.0], dtype=np.float32),
+            np.asarray([-100.0, 0.0, 100.0, 0.0], dtype=np.float32),
+        ),
+    ),
+    "front_flip": (
+        (0.80, 1.20, 1.60),
+        (
+            np.asarray([60.0, 60.0, 0.0, 0.0], dtype=np.float32),
+            np.asarray([0.0, 0.0, -180.0, -180.0], dtype=np.float32),
+            np.asarray([-240.0, -240.0, 0.0, 0.0], dtype=np.float32),
+        ),
+    ),
+}
+STUNT_PHASES["back_flip"] = (
+    STUNT_PHASES["front_flip"][0],
+    tuple(-delta for delta in STUNT_PHASES["front_flip"][1]),
+)
+STUNT_PHASE_GAINS: dict[str, tuple[float, ...]] = {
+    "side_roll": (1.00, 1.00, 1.00),
+    "front_flip": (1.00, 1.00, 1.00),
+}
+STUNT_PHASE_GAINS["back_flip"] = STUNT_PHASE_GAINS["front_flip"]
 VIEWER_FRAME_WIDTH = int(os.environ.get("QUADRUPED_VIEWER_WIDTH", "640"))
 VIEWER_FRAME_HEIGHT = int(os.environ.get("QUADRUPED_VIEWER_HEIGHT", "360"))
 VIEWER_CAMERA_DISTANCE_M = float(os.environ.get("QUADRUPED_VIEWER_CAMERA_DISTANCE_M", "2.8"))
@@ -86,6 +114,97 @@ class DemoControls:
                 self._speed = float(np.clip(speed, 0.0, 1.0))
             self._version += 1
             return DemoSnapshot(command=self._command, speed=self._speed, version=self._version)
+
+
+def _resolve_command_and_speed(command_raw: Any, speed_raw: Any) -> tuple[str, float] | None:
+    command = str(command_raw).strip()
+    if command not in COMMANDS:
+        return None
+    if speed_raw is not None:
+        speed = float(speed_raw)
+    else:
+        speed = COMMAND_DEFAULT_SPEEDS.get(command, DEFAULT_SPEED)
+    return command, float(np.clip(speed, 0.0, 1.0))
+
+
+def _publish_command_state(hub: BroadcastHub, snapshot: DemoSnapshot) -> None:
+    hub.publish(
+        {
+            "type": "command_state",
+            "command": snapshot.command,
+            "speed": snapshot.speed,
+            "version": snapshot.version,
+        }
+    )
+
+
+def _stunt_target_velocity(
+    *,
+    command: str,
+    time_s: float,
+    brain_dt_s: float,
+    max_motor_rad_s: float,
+    joint_limit_rad: float | None,
+    speed: float,
+    current_angles_rad: np.ndarray,
+    phase_index: int,
+    phase_start_time_s: float,
+    phase_start_angles_rad: np.ndarray,
+) -> tuple[np.ndarray, int, float, np.ndarray]:
+    phase_durations_s, phase_deltas_deg = STUNT_PHASES[command]
+    phase_gains = STUNT_PHASE_GAINS.get(command, tuple(1.0 for _ in phase_durations_s))
+    phase_count = len(phase_durations_s)
+    speed_scale = np.float32(np.clip(speed, 0.0, 1.0))
+    joint_limit = np.float32(abs(float(joint_limit_rad))) if joint_limit_rad is not None else None
+
+    # If requested deltas exceed the physical joint range, preserve the pattern
+    # but scale it into the reachable envelope.
+    delta_rad_profile = np.asarray(
+        [np.deg2rad(delta_deg).astype(np.float32) * np.float32(phase_gains[i]) for i, delta_deg in enumerate(phase_deltas_deg)],
+        dtype=np.float32,
+    )
+    cumulative_profile = np.cumsum(delta_rad_profile, axis=0)
+    profile_peak = float(np.max(np.abs(cumulative_profile)))
+    if joint_limit is None:
+        profile_scale = np.float32(1.0)
+    else:
+        profile_scale = np.float32(1.0 if profile_peak <= float(joint_limit) else (float(joint_limit) / max(profile_peak, 1e-6)))
+
+    local_phase_index = int(phase_index)
+    local_phase_start_time_s = float(phase_start_time_s)
+    local_phase_start_angles_rad = np.asarray(phase_start_angles_rad, dtype=np.float32).copy()
+
+    elapsed_in_phase_s = float(time_s) - local_phase_start_time_s
+    while elapsed_in_phase_s >= float(phase_durations_s[local_phase_index]):
+        delta_rad = (
+            delta_rad_profile[local_phase_index]
+            * profile_scale
+            * speed_scale
+        )
+        local_phase_start_angles_rad = local_phase_start_angles_rad + delta_rad
+        if joint_limit is not None:
+            local_phase_start_angles_rad = np.clip(local_phase_start_angles_rad, -joint_limit, joint_limit)
+        local_phase_start_time_s += float(phase_durations_s[local_phase_index])
+        local_phase_index = (local_phase_index + 1) % phase_count
+        elapsed_in_phase_s = float(time_s) - local_phase_start_time_s
+
+    phase_duration_s = float(phase_durations_s[local_phase_index])
+    phase_progress = float(np.clip(elapsed_in_phase_s / max(phase_duration_s, 1e-6), 0.0, 1.0))
+    phase_delta_rad = (
+        delta_rad_profile[local_phase_index]
+        * profile_scale
+        * speed_scale
+    )
+    desired_angles_rad = local_phase_start_angles_rad + (np.float32(phase_progress) * phase_delta_rad)
+    if joint_limit is not None:
+        desired_angles_rad = np.clip(desired_angles_rad, -joint_limit, joint_limit)
+
+    target_velocity = np.clip(
+        (desired_angles_rad - np.asarray(current_angles_rad, dtype=np.float32)) / np.float32(brain_dt_s),
+        -np.float32(max_motor_rad_s),
+        np.float32(max_motor_rad_s),
+    ).astype(np.float32)
+    return target_velocity, local_phase_index, local_phase_start_time_s, local_phase_start_angles_rad
 
 
 def _load_config_path() -> Path:
@@ -203,6 +322,9 @@ def _demo_loop(hub: BroadcastHub, controls: DemoControls, config_path: Path) -> 
     stream_id: str | None = None
     active_version = -1
     step_index = 0
+    stunt_phase_index = 0
+    stunt_phase_start_time_s = 0.0
+    stunt_phase_start_angles_rad = np.zeros((4,), dtype=np.float32)
     data = backend.reset_data(spawn_xy=spawn_xy)
     metrics = backend.initial_metrics(data, goal_xyz)
 
@@ -225,6 +347,9 @@ def _demo_loop(hub: BroadcastHub, controls: DemoControls, config_path: Path) -> 
                 step_index = 0
                 data = backend.reset_data(spawn_xy=spawn_xy)
                 metrics = backend.initial_metrics(data, goal_xyz)
+                stunt_phase_index = 0
+                stunt_phase_start_time_s = 0.0
+                stunt_phase_start_angles_rad = backend.leg_angles(data).astype(np.float32)
                 stream_id = f"command:{snapshot.command}:{snapshot.version}:{time.time_ns()}"
                 hub.publish(
                     {
@@ -237,7 +362,25 @@ def _demo_loop(hub: BroadcastHub, controls: DemoControls, config_path: Path) -> 
                 )
 
             time_s = step_index * float(spec.episode.brain_dt_s)
-            target_velocity = harness.target_velocity(snapshot.command, time_s, speed=snapshot.speed)
+            if snapshot.command in STUNT_PHASES:
+                current_angles = backend.leg_angles(data)
+                target_velocity, stunt_phase_index, stunt_phase_start_time_s, stunt_phase_start_angles_rad = _stunt_target_velocity(
+                    command=snapshot.command,
+                    time_s=time_s,
+                    brain_dt_s=float(spec.episode.brain_dt_s),
+                    max_motor_rad_s=float(spec.robot.max_motor_rad_s),
+                    joint_limit_rad=None,
+                    speed=snapshot.speed,
+                    current_angles_rad=current_angles,
+                    phase_index=stunt_phase_index,
+                    phase_start_time_s=stunt_phase_start_time_s,
+                    phase_start_angles_rad=stunt_phase_start_angles_rad,
+                )
+            elif snapshot.command == "walk":
+                walk_speed = np.float32(0.35) * np.float32(float(spec.robot.max_motor_rad_s) * np.clip(snapshot.speed, 0.0, 1.0))
+                target_velocity = np.asarray([walk_speed, walk_speed, walk_speed, walk_speed], dtype=np.float32)
+            else:
+                target_velocity = harness.target_velocity(snapshot.command, time_s, speed=snapshot.speed)
             backend._advance(data, target_velocity)
             metrics = backend._step_metrics(data, metrics, goal_xyz)
             step_message = backend._snapshot(
@@ -305,8 +448,8 @@ def healthz() -> dict[str, str]:
 
 
 @app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return """<!doctype html>
+def index() -> HTMLResponse:
+    html = """<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -336,18 +479,45 @@ def index() -> str:
     const buttonsEl = document.getElementById("buttons");
     const canvas = document.getElementById("view");
     const ctx = canvas.getContext("2d", { alpha: false });
+    const buttonByCommand = new Map();
     let active = "stand";
 
-    function drawButtons() {
+    function setActive(command) {
+      active = command;
+      for (const [name, button] of buttonByCommand.entries()) {
+        button.classList.toggle("active", name === active);
+      }
+    }
+
+    function buildButtons() {
       buttonsEl.innerHTML = "";
+      buttonByCommand.clear();
       for (const command of commands) {
         const button = document.createElement("button");
+        button.type = "button";
         button.textContent = command;
-        if (command === active) button.classList.add("active");
-        button.onclick = () => {
-          ws.send(JSON.stringify({ type: "set_command", command }));
-        };
+        button.dataset.command = command;
+        button.addEventListener("click", () => { void sendSetCommand(command); });
+        buttonByCommand.set(command, button);
         buttonsEl.appendChild(button);
+      }
+      setActive(active);
+    }
+
+    async function sendSetCommand(command) {
+      try {
+        const response = await fetch("/command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command }),
+        });
+        if (!response.ok) {
+          statusEl.textContent = `failed to set command=${command}`;
+          return;
+        }
+        setActive(command);
+      } catch (_error) {
+        statusEl.textContent = "failed to send command";
       }
     }
 
@@ -384,31 +554,69 @@ def index() -> str:
       statusEl.textContent = `connected | command=${frame.selected_command || active} | step=${frame.step} | t=${Number(frame.time_s || 0).toFixed(2)}s`;
     }
 
-    const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
-    const ws = new WebSocket(wsUrl);
-    ws.onopen = () => { statusEl.textContent = "connected"; };
-    ws.onclose = () => { statusEl.textContent = "disconnected"; };
-    ws.onmessage = (event) => {
-      const message = JSON.parse(event.data);
-      if (message.type === "command_state") {
-        active = String(message.command || active);
-        drawButtons();
-      } else if (message.type === "frame") {
-        drawFrame(message);
-      }
-    };
+    function connectWebSocket() {
+      const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+      const ws = new WebSocket(wsUrl);
+      statusEl.textContent = "connecting...";
+      ws.onopen = () => {
+        statusEl.textContent = "connected";
+      };
+      ws.onclose = () => {
+        statusEl.textContent = "disconnected; reconnecting...";
+        setTimeout(connectWebSocket, 500);
+      };
+      ws.onerror = () => {
+        statusEl.textContent = "connection error";
+      };
+      ws.onmessage = (event) => {
+        const message = JSON.parse(event.data);
+        if (message.type === "command_state") {
+          setActive(String(message.command || active));
+        } else if (message.type === "frame") {
+          drawFrame(message);
+        }
+      };
+    }
 
-    drawButtons();
+    buildButtons();
+    connectWebSocket();
   </script>
 </body>
 </html>"""
+    return HTMLResponse(
+        content=html,
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+        },
+    )
+
+
+@app.post("/command")
+async def set_command(request: Request) -> dict[str, Any]:
+    payload = await request.json()
+    resolved = _resolve_command_and_speed(payload.get("command"), payload.get("speed"))
+    if resolved is None:
+        return {"ok": False, "error": "invalid command"}
+    command, speed = resolved
+    controls: DemoControls = request.app.state.controls
+    hub: BroadcastHub = request.app.state.hub
+    snapshot = controls.set_command(command, speed=speed)
+    _publish_command_state(hub, snapshot)
+    return {
+        "ok": True,
+        "command": snapshot.command,
+        "speed": snapshot.speed,
+        "version": snapshot.version,
+    }
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     hub: BroadcastHub = websocket.app.state.hub
     controls: DemoControls = websocket.app.state.controls
-    await hub.connect(websocket)
+    if not await hub.connect(websocket):
+        return
     try:
         while True:
             raw_message = await websocket.receive_text()
@@ -421,23 +629,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if message_type != "set_command":
                 continue
 
-            command = str(message.get("command", "")).strip()
-            if command not in COMMANDS:
+            resolved = _resolve_command_and_speed(message.get("command"), message.get("speed"))
+            if resolved is None:
                 continue
-            speed_raw = message.get("speed")
-            if speed_raw is not None:
-                speed = float(speed_raw)
-            else:
-                speed = COMMAND_DEFAULT_SPEEDS.get(command, DEFAULT_SPEED)
+            command, speed = resolved
             snapshot = controls.set_command(command, speed=speed)
-            hub.publish(
-                {
-                    "type": "command_state",
-                    "command": snapshot.command,
-                    "speed": snapshot.speed,
-                    "version": snapshot.version,
-                }
-            )
+            _publish_command_state(hub, snapshot)
     except WebSocketDisconnect:
         hub.disconnect(websocket)
     except Exception:

@@ -1,0 +1,47 @@
+<mujoco model="default">
+  <compiler angle="radian" autolimits="true" inertiafromgeom="true"/>
+  <option timestep="0.002500" gravity="0 0 -9.810000" integrator="implicitfast" solver="Newton" iterations="100" ls_iterations="50" noslip_iterations="4"/>
+  <asset>
+    <mesh name="torso_mesh" file="meshes/quadruped/torso.stl" scale="0.160000 0.160000 0.100000"/>
+    <mesh name="leg_foot_mesh" file="meshes/quadruped/leg_foot.stl" scale="0.100000 0.100000 0.160000"/>
+  </asset>
+  <default>
+    <geom contype="1" conaffinity="1" condim="4" margin="0.002000" solref="0.005 1"/>
+    <joint armature="0.01"/>
+  </default>
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+  </visual>
+  <worldbody>
+    <body name="torso" pos="0 0 0">
+      <freejoint name="root_free"/>
+      <geom name="torso_geom" type="mesh" mesh="torso_mesh" mass="1.200000" friction="0.3500 0.01 0.001" rgba="0.82 0.82 0.82 1"/>
+      <body name="front_left_leg" pos="0.200000 0.100000 0.000000">
+        <joint name="front_left_hinge" type="hinge" axis="0.000000 1.000000 0.000000" limited="false" damping="8.000000"/>
+        <geom name="front_left_leg_foot" type="mesh" mesh="leg_foot_mesh" mass="0.600000" friction="0.9000 0.0012 0.00008" priority="2" rgba="0.82 0.82 0.82 1"/>
+        <site name="front_left_foot_site" pos="0 0 -0.160000" size="0.005000"/>
+      </body>
+      <body name="front_right_leg" pos="0.200000 -0.100000 0.000000">
+        <joint name="front_right_hinge" type="hinge" axis="0.000000 1.000000 0.000000" limited="false" damping="8.000000"/>
+        <geom name="front_right_leg_foot" type="mesh" mesh="leg_foot_mesh" mass="0.600000" friction="0.9000 0.0012 0.00008" priority="2" rgba="0.82 0.82 0.82 1"/>
+        <site name="front_right_foot_site" pos="0 0 -0.160000" size="0.005000"/>
+      </body>
+      <body name="rear_left_leg" pos="-0.200000 0.100000 0.000000">
+        <joint name="rear_left_hinge" type="hinge" axis="0.000000 1.000000 0.000000" limited="false" damping="8.000000"/>
+        <geom name="rear_left_leg_foot" type="mesh" mesh="leg_foot_mesh" mass="0.600000" friction="0.9000 0.0012 0.00008" priority="2" rgba="0.82 0.82 0.82 1"/>
+        <site name="rear_left_foot_site" pos="0 0 -0.160000" size="0.005000"/>
+      </body>
+      <body name="rear_right_leg" pos="-0.200000 -0.100000 0.000000">
+        <joint name="rear_right_hinge" type="hinge" axis="0.000000 1.000000 0.000000" limited="false" damping="8.000000"/>
+        <geom name="rear_right_leg_foot" type="mesh" mesh="leg_foot_mesh" mass="0.600000" friction="0.9000 0.0012 0.00008" priority="2" rgba="0.82 0.82 0.82 1"/>
+        <site name="rear_right_foot_site" pos="0 0 -0.160000" size="0.005000"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor name="front_left_motor" joint="front_left_hinge" gear="1" ctrllimited="true" ctrlrange="-12.000000 12.000000"/>
+    <motor name="front_right_motor" joint="front_right_hinge" gear="1" ctrllimited="true" ctrlrange="-12.000000 12.000000"/>
+    <motor name="rear_left_motor" joint="rear_left_hinge" gear="1" ctrllimited="true" ctrlrange="-12.000000 12.000000"/>
+    <motor name="rear_right_motor" joint="rear_right_hinge" gear="1" ctrllimited="true" ctrlrange="-12.000000 12.000000"/>
+  </actuator>
+</mujoco>

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,8 +12,6 @@ import numpy as np
 from fastapi import WebSocket
 
 from brains.config import RuntimeSpec
-from brains.models import list_model_definitions
-from brains.sim.mujoco_layout import LEG_NAMES, LEG_ROTATION_AXIS_BODY, mount_points_body
 
 
 @dataclass(frozen=True)
@@ -49,25 +48,40 @@ class BroadcastHub:
         self._connections: set[WebSocket] = set()
         self._latest_messages: dict[str, dict[str, Any]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._lock = threading.Lock()
+        self._dirty = False
+        self._drain_scheduled = False
 
     def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         self._loop = loop
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket) -> bool:
         await websocket.accept()
+        with self._lock:
+            latest_messages = list(self._latest_messages.values())
+        for message in latest_messages:
+            try:
+                await websocket.send_json(message)
+            except Exception:
+                return False
         self._connections.add(websocket)
-        for message in self._latest_messages.values():
-            await websocket.send_json(message)
+        return True
 
     def disconnect(self, websocket: WebSocket) -> None:
         self._connections.discard(websocket)
 
     def publish(self, message: dict[str, Any]) -> None:
         message_type = str(message.get("type", "event"))
-        self._latest_messages[message_type] = message
-        if self._loop is None:
-            return
-        asyncio.run_coroutine_threadsafe(self._broadcast(message), self._loop)
+        should_schedule = False
+        with self._lock:
+            self._latest_messages[message_type] = message
+            self._dirty = True
+            should_schedule = self._loop is not None and not self._drain_scheduled
+            if should_schedule:
+                self._drain_scheduled = True
+        if should_schedule:
+            assert self._loop is not None
+            self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self._drain_latest()))
 
     async def _broadcast(self, message: dict[str, Any]) -> None:
         stale: list[WebSocket] = []
@@ -79,8 +93,25 @@ class BroadcastHub:
         for websocket in stale:
             self.disconnect(websocket)
 
+    async def _drain_latest(self) -> None:
+        while True:
+            with self._lock:
+                latest_messages = list(self._latest_messages.values())
+                self._dirty = False
+            for message in latest_messages:
+                await self._broadcast(message)
+            with self._lock:
+                if not self._dirty:
+                    self._drain_scheduled = False
+                    return
+
 
 def build_viewer_metadata(spec: RuntimeSpec, mode: str) -> ViewerMetadata:
+    # Lazy import avoids pulling the full model registry (and JAX dependencies)
+    # during API module import, so /healthz can come up quickly.
+    from brains.models import list_model_definitions
+    from brains.sim.mujoco_assets import LEG_NAMES, LEG_ROTATION_AXIS_BODY, load_mujoco_model, robot_geometry_from_model
+
     terrain = {
         "kind": spec.terrain.kind,
         "field_half_m": spec.terrain.field_half_m,
@@ -94,16 +125,16 @@ def build_viewer_metadata(spec: RuntimeSpec, mode: str) -> ViewerMetadata:
         "command_default_duration_s": spec.control.command_default_duration_s,
         "command_max_duration_s": spec.control.command_max_duration_s,
     }
-    mount_points = mount_points_body(spec)
+    geometry = robot_geometry_from_model(load_mujoco_model())
     rotation_axes = [list(LEG_ROTATION_AXIS_BODY) for _ in LEG_NAMES]
     robot = {
-        "body_length_m": spec.robot.body_length_m,
-        "body_width_m": spec.robot.body_width_m,
-        "body_height_m": spec.robot.body_height_m,
-        "leg_length_m": spec.robot.leg_length_m,
-        "leg_radius_m": spec.robot.leg_radius_m,
-        "foot_radius_m": spec.robot.foot_radius_m,
-        "mount_points_body": [list(point) for point in mount_points],
+        "body_length_m": geometry.body_size_m[0],
+        "body_width_m": geometry.body_size_m[1],
+        "body_height_m": geometry.body_size_m[2],
+        "leg_length_m": geometry.leg_length_m,
+        "leg_radius_m": geometry.leg_radius_m,
+        "foot_radius_m": geometry.leg_radius_m,
+        "mount_points_body": [list(point) for point in geometry.mount_points_body],
         "rotation_axes_body": rotation_axes,
         "leg_names": list(LEG_NAMES),
     }

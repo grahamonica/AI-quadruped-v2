@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 
 from brains.config import load_runtime_spec, runtime_spec_from_dict
-from brains.sim.action_layer import ActionProjector
+from brains.sim.action_layer import ActionProjector, command_target_velocity
 
 
 class ControlLayerTests(unittest.TestCase):
@@ -115,6 +115,20 @@ class ControlLayerTests(unittest.TestCase):
         self.assertEqual(first.selected_command, "trot")
         self.assertEqual(held.selected_command, "trot")
         self.assertEqual(updated.selected_command, "turn_left")
+
+    def test_walk_command_drives_all_legs_forward_constantly(self) -> None:
+        max_motor = 8.0
+        speed = 1.0
+        magnitude = np.float32(0.35) * np.float32(max_motor * speed)
+
+        at_start = command_target_velocity("walk", time_s=0.00, speed=speed, max_motor_rad_s=max_motor)
+        mid_cycle = command_target_velocity("walk", time_s=0.55, speed=speed, max_motor_rad_s=max_motor)
+        later = command_target_velocity("walk", time_s=1.85, speed=speed, max_motor_rad_s=max_motor)
+        expected = np.asarray([magnitude, magnitude, magnitude, magnitude], dtype=np.float32)
+
+        self.assertTrue(np.allclose(at_start, expected))
+        self.assertTrue(np.allclose(mid_cycle, expected))
+        self.assertTrue(np.allclose(later, expected))
 
 
 if __name__ == "__main__":

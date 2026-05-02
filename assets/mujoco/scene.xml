@@ -1,0 +1,4 @@
+<mujoco model="default_scene">
+  <include file="ground_grid.xml"/>
+  <include file="quadruped.xml"/>
+</mujoco>

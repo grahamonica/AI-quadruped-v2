@@ -13,43 +13,24 @@ import jax.numpy as jnp
 import numpy as np
 from jax.flatten_util import ravel_pytree
 
-from brains.config import RuntimeSpec, canonical_config_json, config_json_matches_checkpoint, default_runtime_spec
+from brains.config import DEFAULT_SPEC, RuntimeSpec, canonical_config_json, config_json_matches_checkpoint, default_runtime_spec
 from brains.models.registry import ModelDefinition, get_model_definition, load_policy_plugin
-from brains.sim.mujoco_backend import MuJoCoBackend
-from brains.sim.mujoco_layout import (
-    LEG_NAMES,
-    LEG_ROTATION_AXIS_BODY,
-    body_corners_body,
-    body_half_extents,
-    body_principal_inertia,
-    leg_body_fractions,
-    leg_inertia_about_mount,
-    mount_points_body,
-    total_robot_mass_kg,
-)
 
 
-# Robot / physics constants mirror the current KT2-style defaults.
+# Policy/training constants.
 N_IN = 48
 N_OUT = 4
 N_HIDDEN_LAYERS = 4
 SHARED_TRUNK_WIDTH = 32
 MOTOR_LANE_WIDTH = 32
-N_LEGS = len(LEG_NAMES)
-N_BODY_CORNERS = 8
 
-BODY_LENGTH_M = 0.28
-BODY_WIDTH_M = 0.12
-BODY_HEIGHT_M = 0.02
-BODY_MASS_KG = 2.4
-LEG_LENGTH_M = 0.16
-LEG_MASS_KG = 2.4
-FOOT_STATIC_FRICTION = 0.9
-FOOT_KINETIC_FRICTION = 0.65
-LEG_RADIUS_M = 0.010
-FOOT_RADIUS_M = 0.010
-ELASTIC_DEFORMATION_M = 0.002
-N_LEG_BODY_SAMPLES = 3
+_DEFAULT_MODEL = DEFAULT_SPEC.model
+_DEFAULT_TERRAIN = DEFAULT_SPEC.terrain
+_DEFAULT_GOALS = DEFAULT_SPEC.goals
+_DEFAULT_ROBOT = DEFAULT_SPEC.robot
+_DEFAULT_EPISODE = DEFAULT_SPEC.episode
+_DEFAULT_REWARD = DEFAULT_SPEC.reward
+_DEFAULT_TRAINING = DEFAULT_SPEC.training
 
 TAU_MEM = 0.020
 V_THRESH = 0.01
@@ -58,97 +39,40 @@ DT = 0.010
 TRACE_DECAY = 0.70
 DEFAULT_MOTOR_NOISE_SCALE = 0.40
 
-EPISODE_S = 30.0
-SINGLE_VIEW_EPISODE_S = 120.0
-BRAIN_DT = 0.050
-MOTOR_SCALE = 6.0
-GOAL_HEIGHT_M = 0.16
-FIELD_HALF = 15.0
-POSITIONAL_ENCODING = "sinusoidal"
-POSITIONAL_ENCODING_GAIN = 0.35
-POP_SIZE = 32
-SIGMA = 0.08
-LR = 0.05
-PARENT_ELITE_COUNT = 5
-MAX_MOTOR_RAD_S = 8.0
-MAX_MOTOR_NOISE_SCALE = 1.20
-FAST_PROGRESS_TAU_S = 0.20
-SLOW_PROGRESS_TAU_S = 0.80
-DRAMATIC_PROGRESS_DROP_RATIO = 0.55
-NOISE_ATTACK_TAU_S = 0.15
-NOISE_RELEASE_TAU_S = 0.90
-SIDE_TIP_BAND_HALF_WIDTH_RAD = math.radians(60.0)
-SIDE_TIP_DEPTH_PENALTY_SCALE = 10.0
-SIDE_TIP_ESCAPE_DELTA_SCALE = 10.0
-SIDE_TIP_EXIT_BONUS = 8.0
-PROGRESS_REWARD_SCALE = 50.0
-GOAL_REACHED_RADIUS_M = 0.5
-GOAL_REACHED_BONUS = 50.0
+EPISODE_S = float(_DEFAULT_EPISODE.episode_s)
+SINGLE_VIEW_EPISODE_S = float(_DEFAULT_EPISODE.single_view_episode_s)
+BRAIN_DT = float(_DEFAULT_EPISODE.brain_dt_s)
+MOTOR_SCALE = float(_DEFAULT_ROBOT.motor_scale)
+GOAL_HEIGHT_M = float(_DEFAULT_GOALS.height_m)
+FIELD_HALF = float(_DEFAULT_TERRAIN.field_half_m)
+POSITIONAL_ENCODING = str(_DEFAULT_MODEL.positional_encoding)
+POSITIONAL_ENCODING_GAIN = float(_DEFAULT_MODEL.positional_encoding_gain)
+POP_SIZE = int(_DEFAULT_TRAINING.population_size)
+SIGMA = float(_DEFAULT_TRAINING.sigma)
+LR = float(_DEFAULT_TRAINING.learning_rate)
+PARENT_ELITE_COUNT = int(_DEFAULT_TRAINING.parent_elite_count)
+MAX_MOTOR_RAD_S = float(_DEFAULT_ROBOT.max_motor_rad_s)
+MAX_MOTOR_NOISE_SCALE = float(_DEFAULT_REWARD.max_motor_noise_scale)
+FAST_PROGRESS_TAU_S = float(_DEFAULT_REWARD.fast_progress_tau_s)
+SLOW_PROGRESS_TAU_S = float(_DEFAULT_REWARD.slow_progress_tau_s)
+DRAMATIC_PROGRESS_DROP_RATIO = float(_DEFAULT_REWARD.dramatic_progress_drop_ratio)
+NOISE_ATTACK_TAU_S = float(_DEFAULT_REWARD.noise_attack_tau_s)
+NOISE_RELEASE_TAU_S = float(_DEFAULT_REWARD.noise_release_tau_s)
+SIDE_TIP_BAND_HALF_WIDTH_RAD = math.radians(float(_DEFAULT_REWARD.side_tip_band_half_width_deg))
+SIDE_TIP_DEPTH_PENALTY_SCALE = float(_DEFAULT_REWARD.side_tip_depth_penalty_scale)
+SIDE_TIP_ESCAPE_DELTA_SCALE = float(_DEFAULT_REWARD.side_tip_escape_delta_scale)
+SIDE_TIP_EXIT_BONUS = float(_DEFAULT_REWARD.side_tip_exit_bonus)
+PROGRESS_REWARD_SCALE = float(_DEFAULT_REWARD.progress_reward_scale)
+GOAL_REACHED_RADIUS_M = float(_DEFAULT_EPISODE.goal_reached_radius_m)
+GOAL_REACHED_BONUS = float(_DEFAULT_REWARD.goal_reached_bonus)
 
 # Lifespan / population selection
-DEFAULT_LIFESPAN_S = 30.0
-TIPPED_KILL_TIME_S = 5.0
-SELECTION_INTERVAL_S = 15.0
-LIFESPAN_BONUS_S = 20.0
-SELECTION_TOP_FRAC = 0.10
-SELECTION_BOT_FRAC = 0.10
-
-GRAVITY_M_S2 = 9.81
-FLOOR_HEIGHT_M = 0.0
-NORMAL_STIFFNESS_N_M = 20000.0
-NORMAL_DAMPING_N_S_M = 3500.0
-TANGENTIAL_STIFFNESS_N_M = 7000.0
-TANGENTIAL_DAMPING_N_S_M = 450.0
-BODY_CONTACT_FRICTION = 0.35
-ANGULAR_DAMPING_N_M_S = 8.0
-LINEAR_DAMPING_N_S_M = 80.0
-AIRBORNE_LINEAR_DAMPING_N_S_M = 3.0
-AIRBORNE_ANGULAR_DAMPING_N_M_S = 1.0
-MAX_CONTACT_FORCE_N = 120.0
-MAX_SUBSTEP_S = 1.0 / 4000.0
-UNLOADING_STIFFNESS_SCALE = 0.4
-SLEEP_LINEAR_SPEED_THRESHOLD_M_S = 0.01
-SLEEP_ANGULAR_SPEED_THRESHOLD_RAD_S = 0.06
-
-MOTOR_MAX_ANGULAR_ACCELERATION_RAD_S2 = 18.0
-MOTOR_VISCOUS_DAMPING_PER_S = 8.0
-MOTOR_VELOCITY_FILTER_TAU_S = 0.05
-
-TOTAL_MASS_KG = BODY_MASS_KG + (N_LEGS * LEG_MASS_KG)
-BODY_HALF_EXTENTS = jnp.array([BODY_LENGTH_M / 2.0, BODY_WIDTH_M / 2.0, BODY_HEIGHT_M / 2.0], dtype=jnp.float32)
-BODY_PRINCIPAL_INERTIA = jnp.array(
-    [
-        (BODY_MASS_KG / 12.0) * ((BODY_WIDTH_M * BODY_WIDTH_M) + (BODY_HEIGHT_M * BODY_HEIGHT_M)),
-        (BODY_MASS_KG / 12.0) * ((BODY_LENGTH_M * BODY_LENGTH_M) + (BODY_HEIGHT_M * BODY_HEIGHT_M)),
-        (BODY_MASS_KG / 12.0) * ((BODY_LENGTH_M * BODY_LENGTH_M) + (BODY_WIDTH_M * BODY_WIDTH_M)),
-    ],
-    dtype=jnp.float32,
-)
-LEG_INERTIA_ABOUT_MOUNT = jnp.full((N_LEGS,), LEG_MASS_KG * (LEG_LENGTH_M**2) / 3.0, dtype=jnp.float32)
-LEG_ROT_AXIS_BODY = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32)
-REST_CONTACT_BUFFER_M = (TOTAL_MASS_KG * GRAVITY_M_S2) / (max(N_LEGS, 1) * NORMAL_STIFFNESS_N_M)
-SUBSTEP_COUNT = int(math.ceil(BRAIN_DT / MAX_SUBSTEP_S))
-SUBSTEP_DT_S = BRAIN_DT / SUBSTEP_COUNT
-
-MOUNT_POINTS_BODY = jnp.array(
-    [
-        [BODY_LENGTH_M / 2.0, BODY_WIDTH_M / 2.0, 0.0],
-        [BODY_LENGTH_M / 2.0, -BODY_WIDTH_M / 2.0, 0.0],
-        [-BODY_LENGTH_M / 2.0, BODY_WIDTH_M / 2.0, 0.0],
-        [-BODY_LENGTH_M / 2.0, -BODY_WIDTH_M / 2.0, 0.0],
-    ],
-    dtype=jnp.float32,
-)
-BODY_CORNERS_BODY = jnp.array(
-    [
-        [sx * BODY_HALF_EXTENTS[0], sy * BODY_HALF_EXTENTS[1], sz * BODY_HALF_EXTENTS[2]]
-        for sx in (-1.0, 1.0)
-        for sy in (-1.0, 1.0)
-        for sz in (-1.0, 1.0)
-    ],
-    dtype=jnp.float32,
-)
-LEG_BODY_FRACTIONS = jnp.array([0.25, 0.50, 0.75], dtype=jnp.float32)
+DEFAULT_LIFESPAN_S = float(_DEFAULT_EPISODE.default_lifespan_s)
+TIPPED_KILL_TIME_S = float(_DEFAULT_EPISODE.tipped_kill_time_s)
+SELECTION_INTERVAL_S = float(_DEFAULT_EPISODE.selection_interval_s)
+LIFESPAN_BONUS_S = float(_DEFAULT_EPISODE.lifespan_bonus_s)
+SELECTION_TOP_FRAC = float(_DEFAULT_EPISODE.selection_top_frac)
+SELECTION_BOT_FRAC = float(_DEFAULT_EPISODE.selection_bot_frac)
 
 ACTIVE_SPEC: RuntimeSpec = default_runtime_spec()
 
@@ -193,26 +117,14 @@ def apply_runtime_spec(spec: RuntimeSpec | None = None) -> RuntimeSpec:
     global ACTIVE_SPEC
     global ACTIVE_POLICY_RUNTIME
     global PARAM_COUNT
-    global BODY_LENGTH_M, BODY_WIDTH_M, BODY_HEIGHT_M, BODY_MASS_KG
-    global LEG_LENGTH_M, LEG_MASS_KG, LEG_RADIUS_M, FOOT_RADIUS_M, ELASTIC_DEFORMATION_M, N_LEG_BODY_SAMPLES
-    global FOOT_STATIC_FRICTION, FOOT_KINETIC_FRICTION, BODY_CONTACT_FRICTION
     global DT, EPISODE_S, SINGLE_VIEW_EPISODE_S, BRAIN_DT, DEFAULT_LIFESPAN_S, TIPPED_KILL_TIME_S
     global SELECTION_INTERVAL_S, LIFESPAN_BONUS_S, SELECTION_TOP_FRAC, SELECTION_BOT_FRAC, GOAL_REACHED_RADIUS_M
-    global MOTOR_SCALE, MAX_MOTOR_RAD_S, MOTOR_MAX_ANGULAR_ACCELERATION_RAD_S2, MOTOR_VISCOUS_DAMPING_PER_S
-    global MOTOR_VELOCITY_FILTER_TAU_S, GOAL_HEIGHT_M, FIELD_HALF, POSITIONAL_ENCODING, POSITIONAL_ENCODING_GAIN
+    global MOTOR_SCALE, MAX_MOTOR_RAD_S, GOAL_HEIGHT_M, FIELD_HALF, POSITIONAL_ENCODING, POSITIONAL_ENCODING_GAIN
     global POP_SIZE, SIGMA, LR, PARENT_ELITE_COUNT
     global DEFAULT_MOTOR_NOISE_SCALE, MAX_MOTOR_NOISE_SCALE, FAST_PROGRESS_TAU_S, SLOW_PROGRESS_TAU_S
     global DRAMATIC_PROGRESS_DROP_RATIO, NOISE_ATTACK_TAU_S, NOISE_RELEASE_TAU_S, SIDE_TIP_BAND_HALF_WIDTH_RAD
     global SIDE_TIP_DEPTH_PENALTY_SCALE, SIDE_TIP_ESCAPE_DELTA_SCALE, SIDE_TIP_EXIT_BONUS
     global PROGRESS_REWARD_SCALE, GOAL_REACHED_BONUS
-    global FLOOR_HEIGHT_M
-    global GRAVITY_M_S2, NORMAL_STIFFNESS_N_M, NORMAL_DAMPING_N_S_M, TANGENTIAL_STIFFNESS_N_M
-    global TANGENTIAL_DAMPING_N_S_M, ANGULAR_DAMPING_N_M_S, LINEAR_DAMPING_N_S_M
-    global AIRBORNE_LINEAR_DAMPING_N_S_M, AIRBORNE_ANGULAR_DAMPING_N_M_S, MAX_CONTACT_FORCE_N
-    global MAX_SUBSTEP_S, UNLOADING_STIFFNESS_SCALE, SLEEP_LINEAR_SPEED_THRESHOLD_M_S
-    global SLEEP_ANGULAR_SPEED_THRESHOLD_RAD_S, TOTAL_MASS_KG, BODY_HALF_EXTENTS, BODY_PRINCIPAL_INERTIA
-    global LEG_INERTIA_ABOUT_MOUNT, REST_CONTACT_BUFFER_M, SUBSTEP_COUNT, SUBSTEP_DT_S, MOUNT_POINTS_BODY
-    global BODY_CORNERS_BODY, LEG_BODY_FRACTIONS, LEG_ROT_AXIS_BODY
 
     runtime_spec = spec or default_runtime_spec()
     model_definition = get_model_definition(runtime_spec.model.type)
@@ -230,32 +142,12 @@ def apply_runtime_spec(spec: RuntimeSpec | None = None) -> RuntimeSpec:
     robot = runtime_spec.robot
     terrain = runtime_spec.terrain
     goals = runtime_spec.goals
-    friction = runtime_spec.friction
-    physics = runtime_spec.physics
     episode = runtime_spec.episode
     reward = runtime_spec.reward
     training = runtime_spec.training
 
-    BODY_LENGTH_M = float(robot.body_length_m)
-    BODY_WIDTH_M = float(robot.body_width_m)
-    BODY_HEIGHT_M = float(robot.body_height_m)
-    BODY_MASS_KG = float(robot.body_mass_kg)
-    LEG_LENGTH_M = float(robot.leg_length_m)
-    LEG_MASS_KG = float(robot.leg_mass_kg)
-    LEG_RADIUS_M = float(robot.leg_radius_m)
-    FOOT_RADIUS_M = float(robot.leg_radius_m)
-    ELASTIC_DEFORMATION_M = float(robot.elastic_deformation_m)
-    N_LEG_BODY_SAMPLES = int(robot.leg_body_samples)
-
-    FOOT_STATIC_FRICTION = float(friction.foot_static)
-    FOOT_KINETIC_FRICTION = float(friction.foot_kinetic)
-    BODY_CONTACT_FRICTION = float(friction.body)
-
     MOTOR_SCALE = float(robot.motor_scale)
     MAX_MOTOR_RAD_S = float(robot.max_motor_rad_s)
-    MOTOR_MAX_ANGULAR_ACCELERATION_RAD_S2 = float(robot.motor_max_angular_acceleration_rad_s2)
-    MOTOR_VISCOUS_DAMPING_PER_S = float(robot.motor_viscous_damping_per_s)
-    MOTOR_VELOCITY_FILTER_TAU_S = float(robot.motor_velocity_filter_tau_s)
 
     DT = float(episode.neuron_dt_s)
     BRAIN_DT = float(episode.brain_dt_s)
@@ -292,34 +184,6 @@ def apply_runtime_spec(spec: RuntimeSpec | None = None) -> RuntimeSpec:
     PROGRESS_REWARD_SCALE = float(reward.progress_reward_scale)
     GOAL_REACHED_BONUS = float(reward.goal_reached_bonus)
 
-    FLOOR_HEIGHT_M = float(terrain.floor_height_m)
-
-    GRAVITY_M_S2 = float(physics.gravity_m_s2)
-    NORMAL_STIFFNESS_N_M = float(physics.normal_stiffness_n_m)
-    NORMAL_DAMPING_N_S_M = float(physics.normal_damping_n_s_m)
-    TANGENTIAL_STIFFNESS_N_M = float(physics.tangential_stiffness_n_m)
-    TANGENTIAL_DAMPING_N_S_M = float(physics.tangential_damping_n_s_m)
-    ANGULAR_DAMPING_N_M_S = float(physics.angular_damping_n_m_s)
-    LINEAR_DAMPING_N_S_M = float(physics.linear_damping_n_s_m)
-    AIRBORNE_LINEAR_DAMPING_N_S_M = float(physics.airborne_linear_damping_n_s_m)
-    AIRBORNE_ANGULAR_DAMPING_N_M_S = float(physics.airborne_angular_damping_n_m_s)
-    MAX_CONTACT_FORCE_N = float(physics.max_contact_force_n)
-    MAX_SUBSTEP_S = float(physics.max_substep_s)
-    UNLOADING_STIFFNESS_SCALE = float(physics.unloading_stiffness_scale)
-    SLEEP_LINEAR_SPEED_THRESHOLD_M_S = float(physics.sleep_linear_speed_threshold_m_s)
-    SLEEP_ANGULAR_SPEED_THRESHOLD_RAD_S = float(physics.sleep_angular_speed_threshold_rad_s)
-
-    TOTAL_MASS_KG = float(total_robot_mass_kg(runtime_spec))
-    BODY_HALF_EXTENTS = jnp.asarray(body_half_extents(runtime_spec), dtype=jnp.float32)
-    BODY_PRINCIPAL_INERTIA = jnp.asarray(body_principal_inertia(runtime_spec), dtype=jnp.float32)
-    LEG_INERTIA_ABOUT_MOUNT = jnp.asarray(leg_inertia_about_mount(runtime_spec), dtype=jnp.float32)
-    LEG_ROT_AXIS_BODY = jnp.asarray(LEG_ROTATION_AXIS_BODY, dtype=jnp.float32)
-    REST_CONTACT_BUFFER_M = (TOTAL_MASS_KG * GRAVITY_M_S2) / (max(N_LEGS, 1) * NORMAL_STIFFNESS_N_M)
-    SUBSTEP_COUNT = int(math.ceil(BRAIN_DT / MAX_SUBSTEP_S))
-    SUBSTEP_DT_S = BRAIN_DT / SUBSTEP_COUNT
-    MOUNT_POINTS_BODY = jnp.asarray(mount_points_body(runtime_spec), dtype=jnp.float32)
-    BODY_CORNERS_BODY = jnp.asarray(body_corners_body(runtime_spec), dtype=jnp.float32)
-    LEG_BODY_FRACTIONS = jnp.asarray(leg_body_fractions(runtime_spec), dtype=jnp.float32)
     ACTIVE_POLICY_RUNTIME = _policy_runtime_for_spec(runtime_spec)
     PARAM_COUNT = int(ACTIVE_POLICY_RUNTIME.parameter_count)
     jax.clear_caches()
@@ -341,17 +205,10 @@ PARAM_SPECS = [
 ]
 
 
-def _param_size(shape: tuple[int, ...]) -> int:
-    size = 1
-    for dim in shape:
-        size *= dim
-    return size
-
-
 PARAM_OFFSETS: dict[str, tuple[int, int, tuple[int, ...]]] = {}
 _offset = 0
 for _name, _shape in PARAM_SPECS:
-    _size = _param_size(_shape)
+    _size = math.prod(_shape)
     PARAM_OFFSETS[_name] = (_offset, _offset + _size, _shape)
     _offset += _size
 PARAM_COUNT = _offset
@@ -383,23 +240,19 @@ def _shared_brain_zero_state() -> BrainState:
 
 
 def _shared_init_param_vector(key: jax.Array) -> jax.Array:
+    fan_in_by_weight = {
+        "w_in_shared": N_IN,
+        "w_in_motor": N_IN,
+        "w_shared_from_shared": SHARED_TRUNK_WIDTH,
+        "w_shared_from_motors": N_OUT * MOTOR_LANE_WIDTH,
+        "w_motor_from_motor": MOTOR_LANE_WIDTH,
+        "w_motor_from_shared": SHARED_TRUNK_WIDTH,
+    }
     keys = jax.random.split(key, len(PARAM_SPECS))
     parts: list[jax.Array] = []
     for subkey, (name, shape) in zip(keys, PARAM_SPECS, strict=True):
-        if name in {"w_in_shared", "w_in_motor"}:
-            scale = 1.0 / math.sqrt(N_IN)
-            part = jax.random.normal(subkey, shape, dtype=jnp.float32) * jnp.float32(scale)
-        elif name == "w_shared_from_shared":
-            scale = 1.0 / math.sqrt(SHARED_TRUNK_WIDTH)
-            part = jax.random.normal(subkey, shape, dtype=jnp.float32) * jnp.float32(scale)
-        elif name == "w_shared_from_motors":
-            scale = 1.0 / math.sqrt(N_OUT * MOTOR_LANE_WIDTH)
-            part = jax.random.normal(subkey, shape, dtype=jnp.float32) * jnp.float32(scale)
-        elif name == "w_motor_from_motor":
-            scale = 1.0 / math.sqrt(MOTOR_LANE_WIDTH)
-            part = jax.random.normal(subkey, shape, dtype=jnp.float32) * jnp.float32(scale)
-        elif name == "w_motor_from_shared":
-            scale = 1.0 / math.sqrt(SHARED_TRUNK_WIDTH)
+        if name in fan_in_by_weight:
+            scale = 1.0 / math.sqrt(float(fan_in_by_weight[name]))
             part = jax.random.normal(subkey, shape, dtype=jnp.float32) * jnp.float32(scale)
         elif name in {"b_shared", "b_motor"}:
             part = jax.random.uniform(subkey, shape, dtype=jnp.float32, minval=-0.2, maxval=0.2)
@@ -562,10 +415,7 @@ def _policy_runtime_for_spec(spec: RuntimeSpec) -> _PolicyRuntime:
                 f"or {required + 1} (duration head) in command_primitives mode; "
                 f"received {model_definition.output_size}."
             )
-    plugin_runtime = _build_plugin_policy_runtime(spec, model_definition)
-    if plugin_runtime is not None:
-        return plugin_runtime
-    return _build_default_policy_runtime(model_definition)
+    return _build_plugin_policy_runtime(spec, model_definition) or _build_default_policy_runtime(model_definition)
 
 
 def _require_policy_runtime() -> _PolicyRuntime:
@@ -574,20 +424,6 @@ def _require_policy_runtime() -> _PolicyRuntime:
         apply_runtime_spec(ACTIVE_SPEC)
     assert ACTIVE_POLICY_RUNTIME is not None
     return ACTIVE_POLICY_RUNTIME
-
-
-def _brain_zero_state() -> Any:
-    return _require_policy_runtime().zero_state()
-
-
-def _brain_step(
-    params: Any,
-    state: Any,
-    obs: jax.Array,
-    key: jax.Array,
-    noise_scale: jax.Array,
-) -> tuple[Any, jax.Array, jax.Array]:
-    return _require_policy_runtime().step(params, state, obs, key, noise_scale)
 
 
 def _sample_spawn_batch(key: jax.Array, count: int) -> jax.Array:
@@ -644,6 +480,8 @@ class ESTrainer:
         self._top_rewards = np.zeros((0,), dtype=np.float32)
         self._top_indices = np.zeros((0,), dtype=np.int32)
         self._top_generations = np.zeros((0,), dtype=np.int32)
+        from brains.sim.mujoco_backend import MuJoCoBackend
+
         self._rollout_backend = MuJoCoBackend(self.spec)
 
     @property

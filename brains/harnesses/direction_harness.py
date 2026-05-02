@@ -75,7 +75,7 @@ class DirectionHarness:
         HarnessOption("turn_right", ("turn right", "right", "rotate right"), "Stabilized yaw-right gait.", 1.5, 0.55),
         HarnessOption("front_flip", ("front flip", "forward flip", "frontflip"), "Aggressive front-flip impulse pattern.", 1.0, 1.0),
         HarnessOption("back_flip", ("back flip", "backward flip", "backflip"), "Aggressive back-flip impulse pattern.", 1.0, 1.0),
-        HarnessOption("side_roll", ("side roll", "roll", "barrel roll"), "Lateral rolling impulse pattern.", 1.0, 0.75),
+        HarnessOption("side_roll", ("side roll", "roll", "barrel roll"), "Lateral rolling impulse pattern.", 1.0, 1.0),
         HarnessOption("back_up", ("back up", "back", "reverse"), "Run the trot phase in reverse.", 1.5, 0.4),
         HarnessOption("stop", ("stop", "halt", "pause"), "End with zero motor targets.", 0.75, 0.0),
     )
@@ -145,7 +145,6 @@ class DirectionHarness:
         return np.asarray([self.spec.goals.radius_m, 0.0, self.spec.goals.height_m], dtype=np.float32)
 
     def _make_backend(self):
-        import brains.jax_trainer  # noqa: F401
         from brains.sim.mujoco_backend import MuJoCoBackend
 
         return MuJoCoBackend(self.spec)

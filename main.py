@@ -1,255 +1,201 @@
-"""Start the MuJoCo viewer API and viewer app together."""
+"""Native MuJoCo viewer for the playback pipeline."""
 
 from __future__ import annotations
 
 import argparse
-import atexit
-import os
-import shutil
-import signal
-import socket
-import subprocess
-import sys
+import threading
 import time
-from http.client import HTTPConnection
 from pathlib import Path
 
+import mujoco
+import mujoco.viewer
+import numpy as np
+
 from brains.config import DEFAULT_CONFIG_PATH
+from brains.runtime.model_store import discover_model_artifacts
+from brains.runtime.playback import load_playback_for_selection
 
 
-PROJECT = Path(__file__).parent.resolve()
-VIEWER_APP = PROJECT / "frontend"
-PID_FILE = PROJECT / ".server_pids"
-VENV_PY = PROJECT / "venv" / "bin" / "python"
+GLFW_KEY_R = 82
+GLFW_KEY_G = 71
+GLFW_KEY_RIGHT = 262
+GLFW_KEY_LEFT = 263
+GLFW_KEY_DOWN = 264
+GLFW_KEY_UP = 265
+
+GOAL_NUDGE_M = 0.25
+DEFAULT_CHECKPOINT_ROOT = Path("checkpoints")
+CONTINUOUS_VIEWER_STEPS = 2_000_000_000
+
+CAMERA_DISTANCE_M = 3.8
+CAMERA_AZIMUTH_DEG = 135.0
+CAMERA_ELEVATION_DEG = -22.0
+
+
+class _EpisodeRestart(Exception):
+    """Raised inside on_step to break out of the current episode."""
 
 
 def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Start the MuJoCo quadruped viewer API and viewer app.")
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH, help="Runtime config for the API process.")
-    parser.add_argument("--seed", type=int, default=42, help="Trainer seed for the API process.")
-    parser.add_argument("--api-port", type=int, default=8000, help="Port for the FastAPI websocket service.")
-    parser.add_argument(
-        "--viewer-port",
-        "--frontend-port",
-        dest="viewer_port",
-        type=int,
-        default=5173,
-        help="Port for the Vite viewer app.",
-    )
+    parser = argparse.ArgumentParser(description="Native MuJoCo viewer for trained models.")
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--model", default=None, help="Model id to play back (omit for static scene).")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--goal", default=None, help="Goal x,y override.")
+    parser.add_argument("--checkpoints", type=Path, default=DEFAULT_CHECKPOINT_ROOT)
+    parser.add_argument("--list", action="store_true", help="List available models and exit.")
     return parser.parse_args()
 
 
-def _resolve_python() -> str:
-    if Path(sys.executable).exists():
-        return sys.executable
-    if VENV_PY.exists():
-        return str(VENV_PY)
-    python313 = shutil.which("python3.13")
-    if python313:
-        return python313
-    python3 = shutil.which("python3")
-    if python3:
-        return python3
-    return sys.executable
+def _parse_goal_arg(text: str | None) -> tuple[float, float] | None:
+    if not text:
+        return None
+    parts = [chunk.strip() for chunk in text.replace(";", ",").split(",") if chunk.strip()]
+    if len(parts) < 2:
+        raise SystemExit(f"--goal expects 'x,y' (got {text!r}).")
+    return float(parts[0]), float(parts[1])
 
 
-_PY = _resolve_python()
-
-
-def _ensure_runtime_files() -> None:
-    missing: list[str] = []
-    for relative_path in ("brains/api/live.py", "frontend/package.json", "frontend/index.html"):
-        if not (PROJECT / relative_path).exists():
-            missing.append(relative_path)
-    if missing:
-        raise SystemExit("Cannot start the UI stack because required runtime files are missing: " + ", ".join(missing))
-
-
-def _save_pids(*pids: int) -> None:
-    PID_FILE.write_text("\n".join(str(pid) for pid in pids if pid), encoding="utf-8")
-
-
-def _kill_from_pid_file() -> None:
-    if not PID_FILE.exists():
+def _list_models(checkpoint_root: Path) -> None:
+    artifacts = discover_model_artifacts(checkpoint_root)
+    if not artifacts:
+        print(f"No models found under {checkpoint_root}.")
         return
-    killed = 0
-    for pid_str in PID_FILE.read_text(encoding="utf-8").split():
-        try:
-            pid = int(pid_str)
-            subprocess.run(["pkill", "-KILL", "-P", str(pid)], capture_output=True)
-            os.kill(pid, signal.SIGKILL)
-            killed += 1
-        except (ProcessLookupError, ValueError, OSError):
-            pass
-    PID_FILE.unlink(missing_ok=True)
-    if killed:
-        print(f"  cleaned up {killed} process(es) from previous run")
-        time.sleep(0.4)
+    for artifact in artifacts:
+        message = artifact.to_message()
+        model_id = str(message.get("id", "?"))
+        generation = message.get("generation", 0)
+        best_reward = message.get("best_reward")
+        best_text = f"{best_reward:.2f}" if isinstance(best_reward, (int, float)) else "n/a"
+        print(f"{model_id:40s}  gen={generation}  best_reward={best_text}")
 
 
-def _kill_port(port: int) -> None:
-    result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True)
-    for pid in result.stdout.strip().split():
-        try:
-            os.kill(int(pid), signal.SIGKILL)
-        except (ProcessLookupError, ValueError):
-            pass
-    if result.stdout.strip():
-        time.sleep(0.4)
-
-
-def _start_server(api_port: int, config: Path, seed: int) -> subprocess.Popen:
-    env = os.environ.copy()
-    env["QUADRUPED_CONFIG"] = str(config.resolve())
-    env["QUADRUPED_SEED"] = str(seed)
-    return subprocess.Popen(
-        [_PY, "-m", "uvicorn", "brains.api.live:app", "--host", "0.0.0.0", "--port", str(api_port), "--log-level", "warning"],
-        cwd=PROJECT,
-        env=env,
-    )
-
-
-def _start_frontend(viewer_port: int, api_port: int) -> subprocess.Popen:
-    env = os.environ.copy()
-    env["VITE_API_PORT"] = str(api_port)
-    env["VITE_WS_URL"] = f"ws://127.0.0.1:{api_port}/ws"
-    return subprocess.Popen(
-        [
-            "npm",
-            "run",
-            "dev",
-            "--",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            str(viewer_port),
-            "--strictPort",
-        ],
-        cwd=VIEWER_APP,
-        env=env,
-    )
-
-
-def _wait_for_port(host: str, port: int, timeout_s: float) -> bool:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            with socket.create_connection((host, port), timeout=0.8):
-                return True
-        except OSError:
-            time.sleep(0.25)
-    return False
-
-
-def _wait_for_http_ok(host: str, port: int, path: str, timeout_s: float) -> bool:
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        connection = None
-        try:
-            connection = HTTPConnection(host, port, timeout=1.5)
-            connection.request("GET", path)
-            response = connection.getresponse()
-            response.read()
-            if 200 <= int(response.status) < 500:
-                return True
-        except OSError:
-            pass
-        finally:
-            if connection is not None:
-                try:
-                    connection.close()
-                except Exception:
-                    pass
-        time.sleep(0.35)
-    return False
-
-
-def _wait_until_ready(
-    server: subprocess.Popen,
-    frontend: subprocess.Popen,
-    api_port: int,
-    viewer_port: int,
-) -> None:
-    print("Waiting for viewer API health endpoint...", flush=True)
-    if not _wait_for_http_ok("127.0.0.1", api_port, "/healthz", timeout_s=45.0):
-        raise RuntimeError(
-            f"Viewer API did not become ready on http://127.0.0.1:{api_port}/healthz "
-            f"(server return code: {server.poll()})."
-        )
-
-    print("Waiting for viewer app dev server...", flush=True)
-    if not _wait_for_port("127.0.0.1", viewer_port, timeout_s=75.0):
-        raise RuntimeError(
-            f"Viewer app did not open port {viewer_port} "
-            f"(viewer app return code: {frontend.poll()})."
-        )
-    if not _wait_for_http_ok("127.0.0.1", viewer_port, "/", timeout_s=20.0):
-        raise RuntimeError(
-            f"Viewer app port {viewer_port} opened but HTTP root did not respond "
-            f"(viewer app return code: {frontend.poll()})."
-        )
+def _resolve_goal(playback, override_xy: tuple[float, float] | None) -> np.ndarray:
+    height_m = float(playback.spec.goals.height_m)
+    if override_xy is not None:
+        return np.asarray([override_xy[0], override_xy[1], height_m], dtype=np.float32)
+    goal = np.asarray(playback.random_goal(), dtype=np.float32)
+    if goal.shape[-1] == 2:
+        return np.asarray([goal[0], goal[1], height_m], dtype=np.float32)
+    return goal
 
 
 def main() -> None:
     args = _parse_args()
-    _ensure_runtime_files()
-
-    print("Clearing previous run…", flush=True)
-    _kill_from_pid_file()
-    _kill_port(args.api_port)
-    _kill_port(args.viewer_port)
-
-    processes: list[subprocess.Popen] = []
-
-    def _shutdown(_sig=None, _frame=None, *, exit_process: bool = True) -> None:
-        print("\nShutting down…", flush=True)
-        for process in processes:
-            try:
-                process.terminate()
-            except Exception:
-                pass
-        time.sleep(1)
-        for process in processes:
-            try:
-                if process.poll() is None:
-                    process.kill()
-            except Exception:
-                pass
-        PID_FILE.unlink(missing_ok=True)
-        if exit_process:
-            raise SystemExit(0)
-
-    atexit.register(lambda: _shutdown(exit_process=False))
-    signal.signal(signal.SIGINT, _shutdown)
-    signal.signal(signal.SIGTERM, _shutdown)
-
-    server = _start_server(args.api_port, args.config, args.seed)
-    processes.append(server)
-    time.sleep(1)
-
-    frontend = _start_frontend(args.viewer_port, args.api_port)
-    processes.append(frontend)
-    try:
-        _wait_until_ready(server, frontend, args.api_port, args.viewer_port)
-    except Exception as exc:
-        print(f"Startup failed: {exc}", flush=True)
-        _shutdown()
+    if args.list:
+        _list_models(args.checkpoints)
         return
 
-    _save_pids(server.pid, frontend.pid)
+    initial_goal_xy = _parse_goal_arg(args.goal)
+    result = load_playback_for_selection(
+        config_path=args.config,
+        seed=args.seed,
+        selected_model_id=args.model,
+        checkpoint_root=args.checkpoints,
+    )
+    playback = result.playback
+    for entry in result.skipped:
+        print(f"skipped: {entry.get('path')}: {entry.get('reason')}")
 
-    print(f"Python          : {_PY}", flush=True)
-    print(f"Config          : {args.config.resolve()}", flush=True)
-    print(f"Viewer API      : http://127.0.0.1:{args.api_port}", flush=True)
-    print(f"Viewer app      : http://127.0.0.1:{args.viewer_port}", flush=True)
-    print("Press Ctrl-C to stop.\n", flush=True)
+    backend = playback.rollout_backend
+    model = backend.model
+    data = backend.make_data()
+    spec = playback.spec
+    brain_dt_s = float(spec.episode.brain_dt_s)
+    is_static = bool(getattr(playback, "static", False))
 
-    while True:
-        for process in processes:
-            if process.poll() is not None:
-                print(f"Process {process.args[0]} exited with code {process.returncode}", flush=True)
-                _shutdown()
-        time.sleep(1)
+    state_lock = threading.Lock()
+    goal_xy: tuple[float, float] | None = initial_goal_xy
+    restart_requested = False
+
+    def _key_callback(keycode: int) -> None:
+        nonlocal goal_xy, restart_requested
+        with state_lock:
+            current = goal_xy
+            if current is None:
+                fallback = np.asarray(playback.random_goal(), dtype=np.float32)
+                current = (float(fallback[0]), float(fallback[1])) if fallback.shape[-1] >= 2 else (0.0, 0.0)
+
+            if keycode == GLFW_KEY_R:
+                restart_requested = True
+                print("[viewer] restart episode", flush=True)
+                return
+            if keycode == GLFW_KEY_G:
+                print(f"[viewer] goal x,y = ({current[0]:.2f}, {current[1]:.2f})", flush=True)
+                return
+            if keycode == GLFW_KEY_RIGHT:
+                goal_xy = (current[0] + GOAL_NUDGE_M, current[1])
+            elif keycode == GLFW_KEY_LEFT:
+                goal_xy = (current[0] - GOAL_NUDGE_M, current[1])
+            elif keycode == GLFW_KEY_UP:
+                goal_xy = (current[0], current[1] + GOAL_NUDGE_M)
+            elif keycode == GLFW_KEY_DOWN:
+                goal_xy = (current[0], current[1] - GOAL_NUDGE_M)
+            else:
+                return
+            restart_requested = True
+            print(f"[viewer] goal -> ({goal_xy[0]:.2f}, {goal_xy[1]:.2f}); restarting", flush=True)
+
+    print(f"Loaded model: {args.model or '(static scene)'}")
+    if result.loaded_checkpoint is not None:
+        print(f"Checkpoint: {result.loaded_checkpoint}")
+    print("Keys: arrows nudge goal | R restart | G print goal | close window to exit")
+
+    with mujoco.viewer.launch_passive(model, data, key_callback=_key_callback) as viewer:
+        torso_id = getattr(backend, "_torso_body_id", None)
+        if torso_id is not None:
+            viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+            viewer.cam.trackbodyid = int(torso_id)
+        viewer.cam.distance = CAMERA_DISTANCE_M
+        viewer.cam.azimuth = CAMERA_AZIMUTH_DEG
+        viewer.cam.elevation = CAMERA_ELEVATION_DEG
+
+        def _emit(step_message: dict) -> None:
+            nonlocal restart_requested
+            with state_lock:
+                if restart_requested:
+                    restart_requested = False
+                    raise _EpisodeRestart()
+            qpos = np.asarray(step_message["qpos"], dtype=np.float64)
+            qvel = np.asarray(step_message["qvel"], dtype=np.float64)
+            data.qpos[:] = qpos
+            data.qvel[:] = qvel
+            if data.act.size:
+                data.act[:] = 0.0
+            data.time = float(step_message.get("time_s", 0.0))
+            mujoco.mj_forward(model, data)
+            viewer.sync()
+            if not viewer.is_running():
+                raise _EpisodeRestart()
+            time.sleep(brain_dt_s)
+
+        while viewer.is_running():
+            with state_lock:
+                current_goal_xy = goal_xy
+            goal_xyz = _resolve_goal(playback, current_goal_xy)
+            playback.state.goal_xyz = (float(goal_xyz[0]), float(goal_xyz[1]), float(goal_xyz[2]))
+            episode_key = playback.advance_key()
+            spawn_xy = None if is_static else np.zeros((2,), dtype=np.float32)
+            replay_steps = 1 if is_static else CONTINUOUS_VIEWER_STEPS
+            try:
+                playback.run_logged_episode(
+                    goal_xyz, episode_key, _emit, steps=replay_steps, spawn_xy=spawn_xy
+                )
+            except _EpisodeRestart:
+                continue
+            except Exception as exc:
+                print(f"[viewer] episode error: {exc}", flush=True)
+                time.sleep(0.5)
+                continue
+
+            if is_static:
+                while viewer.is_running():
+                    with state_lock:
+                        if restart_requested:
+                            restart_requested = False
+                            break
+                    viewer.sync()
+                    time.sleep(0.05)
 
 
 if __name__ == "__main__":

@@ -15,8 +15,16 @@ import brains.jax_trainer as trainer_module
 from brains.config import RuntimeSpec
 
 from .action_layer import ActionProjector
-from .mujoco_layout import LEG_NAMES, body_half_extents, terrain_height_at, total_robot_mass_kg
-from .mujoco_model_builder import MujocoModelArtifacts, build_mujoco_model
+from .mujoco_assets import (
+    ACTUATOR_NAMES,
+    FOOT_SITE_NAMES,
+    LEG_BODY_NAMES,
+    LEG_JOINT_NAMES,
+    LEG_NAMES,
+    TORSO_BODY_NAME,
+    load_mujoco_model,
+    robot_geometry_from_model,
+)
 
 
 LoggedStepCallback = Callable[[dict[str, Any]], None]
@@ -64,15 +72,14 @@ class MuJoCoBackend:
         self.spec = trainer_module.apply_runtime_spec(spec)
         self.leg_names = LEG_NAMES
         self.leg_count = len(self.leg_names)
-        self.body_height_m = float(self.spec.robot.body_height_m)
-        self.body_mass_kg = float(self.spec.robot.body_mass_kg)
-        self.leg_length_m = float(self.spec.robot.leg_length_m)
-        self.leg_mass_kg = float(self.spec.robot.leg_mass_kg)
-        self.foot_radius_m = float(self.spec.robot.foot_radius_m)
-        self.body_half_extents_m = body_half_extents(self.spec)
-        self.total_mass_kg = total_robot_mass_kg(self.spec)
-        self.model_artifacts: MujocoModelArtifacts = build_mujoco_model(self.spec)
-        self.model = mujoco.MjModel.from_xml_string(self.model_artifacts.xml)
+        self.model = load_mujoco_model()
+        self.geometry = robot_geometry_from_model(self.model)
+        self.body_half_extents_m = self.geometry.body_half_extents_m
+        self.body_height_m = float(self.geometry.body_size_m[2])
+        self.leg_length_m = float(self.geometry.leg_length_m)
+        self.foot_radius_m = float(self.geometry.leg_radius_m)
+        self.floor_height_m = float(self.geometry.floor_height_m)
+        self.contact_margin_m = float(np.max(self.model.geom_margin)) if self.model.ngeom else 0.0
         self.capabilities = BackendCapabilities(
             name="mujoco",
             batched_rollout_support=False,
@@ -81,36 +88,32 @@ class MuJoCoBackend:
             deterministic_mode_supported=True,
             max_parallel_envs=1,
         )
-        control_ratio = self.spec.episode.brain_dt_s / self.spec.simulator.mujoco.timestep_s
+        control_ratio = self.spec.episode.brain_dt_s / float(self.model.opt.timestep)
         rounded = round(control_ratio)
         if rounded <= 0 or abs(control_ratio - rounded) > 1e-8:
-            raise ValueError(
-                "simulator.mujoco.timestep_s must divide episode.brain_dt_s exactly for stable control updates."
-            )
+            raise ValueError("MuJoCo XML timestep must divide episode.brain_dt_s exactly for stable control updates.")
         self.control_substeps = int(rounded)
-        self._torso_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.model_artifacts.body_name)
+        self._torso_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, TORSO_BODY_NAME)
         self._leg_body_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, name)
-            for name in self.model_artifacts.leg_body_names
+            for name in LEG_BODY_NAMES
         ]
         self._foot_site_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, name)
-            for name in self.model_artifacts.foot_site_names
+            for name in FOOT_SITE_NAMES
         ]
         self._joint_qpos_adr = [
             int(self.model.joint(name).qposadr[0])
-            for name in self.model_artifacts.leg_joint_names
+            for name in LEG_JOINT_NAMES
         ]
         self._joint_dof_adr = [
             int(self.model.joint(name).dofadr[0])
-            for name in self.model_artifacts.leg_joint_names
+            for name in LEG_JOINT_NAMES
         ]
         self._actuator_ids = [
             mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_ACTUATOR, name)
-            for name in self.model_artifacts.actuator_names
+            for name in ACTUATOR_NAMES
         ]
-        self._torso_mass = self.body_mass_kg
-        self._leg_masses = np.full((self.leg_count,), self.leg_mass_kg, dtype=np.float32)
         self._action_projector = ActionProjector(
             mode=self.spec.control.mode,
             command_vocabulary=self.spec.control.command_vocabulary,
@@ -134,7 +137,7 @@ class MuJoCoBackend:
             spawn_xy_np = np.zeros((2,), dtype=np.float32)
         else:
             spawn_xy_np = np.asarray(spawn_xy, dtype=np.float32)
-        spawn_floor = terrain_height_at(self.spec, spawn_xy_np.tolist())
+        spawn_floor = self.floor_height_at(spawn_xy_np)
         data.qpos[:] = 0.0
         data.qvel[:] = 0.0
         if data.act.size:
@@ -142,7 +145,7 @@ class MuJoCoBackend:
         data.ctrl[:] = 0.0
         data.qpos[0] = float(spawn_xy_np[0])
         data.qpos[1] = float(spawn_xy_np[1])
-        data.qpos[2] = float(spawn_floor + self.leg_length_m + self.foot_radius_m)
+        data.qpos[2] = float(spawn_floor + self.geometry.reset_height_m)
         data.qpos[3:7] = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
         for address in self._joint_qpos_adr:
             data.qpos[address] = 0.0
@@ -179,10 +182,7 @@ class MuJoCoBackend:
         return np.asarray(data.xipos[self._leg_body_ids], dtype=np.float32).copy()
 
     def center_of_mass(self, data: mujoco.MjData) -> np.ndarray:
-        torso_pos = np.asarray(data.xipos[self._torso_body_id], dtype=np.float32)
-        leg_positions = self.leg_com_positions(data)
-        weighted = (torso_pos * self._torso_mass) + np.sum(leg_positions * self._leg_masses[:, None], axis=0)
-        return weighted / float(self.total_mass_kg)
+        return np.asarray(data.subtree_com[self._torso_body_id], dtype=np.float32).copy()
 
     def build_obs(self, data: mujoco.MjData, goal_xyz: np.ndarray | jax.Array) -> jax.Array:
         goal_np = np.asarray(goal_xyz, dtype=np.float32)
@@ -322,9 +322,15 @@ class MuJoCoBackend:
         )
 
     def _contact_mode_name(self, foot_position: np.ndarray) -> str:
-        floor_height = terrain_height_at(self.spec, foot_position[:2].tolist())
-        threshold = floor_height + self.foot_radius_m + self.spec.simulator.mujoco.contact_margin_m
+        floor_height = self.floor_height_at(foot_position[:2])
+        threshold = floor_height + self.contact_margin_m
         return "static" if float(foot_position[2]) <= threshold else "airborne"
+
+    def floor_height_at(self, _xy: np.ndarray | list[float] | tuple[float, float]) -> float:
+        return self.floor_height_m
+
+    def foot_clearance_m(self, foot_position: np.ndarray) -> float:
+        return float(foot_position[2] - self.floor_height_at(foot_position[:2]))
 
     def _body_corners_world(self, data: mujoco.MjData) -> list[list[float]]:
         half_extents = np.asarray(self.body_half_extents_m, dtype=np.float32)
@@ -464,16 +470,17 @@ class MuJoCoBackend:
         steps: int,
         spawn_xy: np.ndarray | jax.Array | None = None,
     ) -> float:
-        params = trainer_module._require_policy_runtime().unflatten_params(jnp.asarray(params_flat, dtype=jnp.float32))
+        policy_runtime = trainer_module._require_policy_runtime()
+        params = policy_runtime.unflatten_params(jnp.asarray(params_flat, dtype=jnp.float32))
         data = self.reset_data(spawn_xy=spawn_xy)
         goal_xyz_jax = jnp.asarray(goal_xyz, dtype=jnp.float32)
         key_jax = jnp.asarray(key, dtype=jnp.uint32)
-        brain_state = trainer_module._brain_zero_state()
+        brain_state = policy_runtime.zero_state()
         metrics = self.initial_metrics(data, goal_xyz_jax)
 
         for step_index in range(int(steps)):
             obs = self.build_obs(data, goal_xyz_jax)
-            brain_state, motor_cmds, key_jax = trainer_module._brain_step(
+            brain_state, motor_cmds, key_jax = policy_runtime.step(
                 params,
                 brain_state,
                 obs,

@@ -16,7 +16,6 @@ import numpy as np
 import brains.jax_trainer as trainer_module
 from brains.config import RuntimeSpec
 from brains.sim.mujoco_backend import MuJoCoBackend
-from brains.sim.mujoco_layout import terrain_height_at
 
 
 @dataclass(frozen=True)
@@ -100,12 +99,9 @@ class QualityGateRunner:
         data = backend.reset_data(spawn_xy=spawn_xy)
         body_pos = backend.body_position(data)
         foot_positions = backend.foot_positions(data)
-        spawn_floor = terrain_height_at(self.spec, spawn_xy.tolist())
-        body_bottom = float(body_pos[2] - backend.body_height_m * 0.5)
-        foot_clearances = [
-            float(foot_position[2] - terrain_height_at(self.spec, foot_position[:2].tolist()) - backend.foot_radius_m)
-            for foot_position in foot_positions
-        ]
+        spawn_floor = backend.floor_height_at(spawn_xy)
+        body_bottom = min(float(corner[2]) for corner in backend._body_corners_world(data))
+        foot_clearances = [backend.foot_clearance_m(foot_position) for foot_position in foot_positions]
         max_abs_foot_clearance = max(abs(value) for value in foot_clearances)
         passed = body_bottom >= (spawn_floor - 5e-3) and max_abs_foot_clearance <= 6e-2
         return GateResult(
