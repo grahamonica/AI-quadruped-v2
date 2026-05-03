@@ -13,7 +13,7 @@ from pathlib import Path
 import jax
 from jax.flatten_util import ravel_pytree
 
-from brains.config import RuntimeSpec
+from brains.config import DEFAULT_SPEC, RuntimeSpec
 from .registry import ModelDefinition, load_policy_plugin, register_model_definition
 
 
@@ -25,16 +25,16 @@ class NotebookModel:
     input_size: int
     output_size: int
     parameter_count: int | None = None
-    trainer: str = "openai_es"
+    trainer: str = str(DEFAULT_SPEC.model.trainer)
     policy_entrypoint: str | None = None
-    control_mode: str = "motor_targets"
-    command_vocabulary: tuple[str, ...] = ("trot", "turn_left", "turn_right", "stand")
-    default_command_speed: float = 0.45
-    command_update_interval_s: float = 0.60
-    command_default_duration_s: float = 1.80
-    command_max_duration_s: float = 4.00
-    positional_encoding: str = "sinusoidal"
-    positional_encoding_gain: float = 0.35
+    control_mode: str = str(DEFAULT_SPEC.control.mode)
+    command_vocabulary: tuple[str, ...] = DEFAULT_SPEC.control.command_vocabulary
+    default_command_speed: float = float(DEFAULT_SPEC.control.default_command_speed)
+    command_update_interval_s: float = float(DEFAULT_SPEC.control.command_update_interval_s)
+    command_default_duration_s: float = float(DEFAULT_SPEC.control.command_default_duration_s)
+    command_max_duration_s: float = float(DEFAULT_SPEC.control.command_max_duration_s)
+    positional_encoding: str = str(DEFAULT_SPEC.model.positional_encoding)
+    positional_encoding_gain: float = float(DEFAULT_SPEC.model.positional_encoding_gain)
 
 
 def register_notebook_model(

@@ -19,12 +19,15 @@ env/
 # Node
 frontend/node_modules/
 frontend/dist/
+frontend/.vite/
 
 # OS
 .DS_Store
 
 # Local IDE
 .claude/settings.local.json
+.claude/*.lock
+.vscode/
 
 # Runtime state
 .server_pids

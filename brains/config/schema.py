@@ -139,7 +139,7 @@ class RobotSpec:
     elastic_deformation_m: float = 0.002
     leg_body_samples: int = 3
     motor_scale: float = 6.0
-    max_motor_rad_s: float = 8.0
+    max_motor_rad_s: float = 24.0
     motor_max_angular_acceleration_rad_s2: float = 18.0
     motor_viscous_damping_per_s: float = 8.0
     motor_velocity_filter_tau_s: float = 0.05
